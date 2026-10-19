@@ -1,4 +1,7 @@
-"""Streamlit app: Reinforced concrete beam design per ACI 318-19.
+"""Streamlit app: Reinforced concrete beam design per ACI 318-19 (MKS units: cm, kg).
+
+All inputs and outputs are in cm, kg, kg-m and ksc (kg/cm²). The calculation
+core in aci318.py works in SI; values are converted exactly at the boundary.
 
 Run with:  streamlit run app.py
 """
@@ -17,6 +20,45 @@ st.set_page_config(page_title="RC Beam Design – ACI 318-19", page_icon="🏗�
 
 OK, NG = "✅ OK", "❌ NG"
 
+# ---------------------------------------------------------------------------
+# Unit conversion (MKS <-> SI)
+# ---------------------------------------------------------------------------
+G = 9.80665                 # N per kgf
+KSC = aci.KSC_TO_MPA        # MPa per ksc
+
+
+def cm_to_mm(x): return x * 10.0
+def mm_to_cm(x): return x / 10.0
+def ksc_to_mpa(x): return x * KSC
+def mpa_to_ksc(x): return x / KSC
+def kg_to_n(x): return x * G
+def n_to_kg(x): return x / G
+def kgm_to_nmm(x): return x * G * 1000.0
+def nmm_to_kgm(x): return x / (G * 1000.0)
+def mm2_to_cm2(x): return x / 100.0
+
+
+# Coefficients of the SI equations rewritten for f'c, fy in ksc and lengths in cm
+K_SQRT = math.sqrt(KSC) / KSC     # c·√f'c[MPa] (MPa) -> (c·K_SQRT)·√f'c[ksc] (ksc), ≈ 3.19
+C_ASMIN1 = 0.25 * math.sqrt(KSC) / KSC        # ≈ 0.80
+C_ASMIN2 = 1.4 / KSC                          # ≈ 14.3
+C_VC = 0.17 * K_SQRT                          # ≈ 0.54
+C_VC_RHO = 0.66 * K_SQRT                      # ≈ 2.11
+C_VC_MAX = 0.42 * K_SQRT                      # ≈ 1.34
+C_VS_MAX = 0.66 * K_SQRT                      # ≈ 2.11
+C_AVMIN_TRIG = 0.083 * K_SQRT                 # ≈ 0.27
+C_AVMIN1 = 0.062 * K_SQRT                     # ≈ 0.20
+C_AVMIN2 = 0.35 / KSC                         # ≈ 3.6
+C_SMAX = 0.33 * K_SQRT                        # ≈ 1.05
+SQRT_FC_LIM = 8.3 / math.sqrt(KSC)            # √f'c ≤ 26.5 (ksc^0.5)
+
+STEEL_GRADES_KSC = {
+    "SR24 (fy = 2,400 ksc)": 2400.0,
+    "SD30 (fy = 3,000 ksc)": 3000.0,
+    "SD40 (fy = 4,000 ksc)": 4000.0,
+    "SD50 (fy = 5,000 ksc)": 5000.0,
+}
+
 
 def ok(flag: bool) -> str:
     return OK if flag else NG
@@ -26,7 +68,7 @@ def ok(flag: bool) -> str:
 # Inputs
 # ---------------------------------------------------------------------------
 st.title("🏗️ ออกแบบคานคอนกรีตเสริมเหล็ก ตามมาตรฐาน ACI 318-19")
-st.caption("หน้าตัดสี่เหลี่ยมผืนผ้า · วิธีกำลัง (Strength Design) · หน่วย SI (mm, MPa, kN)")
+st.caption("หน้าตัดสี่เหลี่ยมผืนผ้า · วิธีกำลัง (Strength Design) · หน่วย MKS: cm, kg, kg-m, ksc (kg/cm²)")
 
 with st.sidebar:
     st.header("ข้อมูลโครงการ")
@@ -34,29 +76,23 @@ with st.sidebar:
     beam_id = st.text_input("ชื่อคาน", "B1")
 
     st.header("1) วัสดุ")
-    fc_unit = st.radio("หน่วยกำลังอัดคอนกรีต", ["ksc", "MPa"], horizontal=True)
-    if fc_unit == "ksc":
-        fc_ksc = st.number_input("f'c (ksc, ทรงกระบอก)", 150.0, 800.0, 240.0, 10.0)
-        fc = fc_ksc * aci.KSC_TO_MPA
-    else:
-        fc = st.number_input("f'c (MPa)", 17.0, 80.0, 24.0, 1.0)
-    st.caption(f"f'c = {fc:.2f} MPa = {fc / aci.KSC_TO_MPA:.0f} ksc")
-
-    grades = list(aci.STEEL_GRADES) + ["กำหนดเอง"]
+    fc_k = st.number_input("f'c (ksc, ทรงกระบอก)", 175.0, 800.0, 240.0, 10.0,
+                           help="ACI 318-19 Table 19.2.1.1: f'c ≥ 17 MPa (≈ 175 ksc)")
+    grades = list(STEEL_GRADES_KSC) + ["กำหนดเอง"]
     g_main = st.selectbox("เหล็กเสริมหลัก", grades, index=2)
-    fy = (st.number_input("fy เหล็กหลัก (MPa)", 200.0, 550.0, 420.0, 5.0)
-          if g_main == "กำหนดเอง" else aci.STEEL_GRADES[g_main])
+    fy_k = (st.number_input("fy เหล็กหลัก (ksc)", 2000.0, 5600.0, 4000.0, 100.0)
+            if g_main == "กำหนดเอง" else STEEL_GRADES_KSC[g_main])
     g_stir = st.selectbox("เหล็กปลอก", grades, index=0)
-    fyt = (st.number_input("fyt เหล็กปลอก (MPa)", 200.0, 550.0, 235.0, 5.0)
-           if g_stir == "กำหนดเอง" else aci.STEEL_GRADES[g_stir])
+    fyt_k = (st.number_input("fyt เหล็กปลอก (ksc)", 2000.0, 5600.0, 2400.0, 100.0)
+             if g_stir == "กำหนดเอง" else STEEL_GRADES_KSC[g_stir])
     lam = st.number_input("λ (คอนกรีตน้ำหนักปกติ = 1.0)", 0.75, 1.0, 1.0, 0.05)
-    d_agg = st.number_input("ขนาดมวลรวมโตสุด (mm)", 10.0, 40.0, 20.0, 5.0)
+    agg_cm = st.number_input("ขนาดมวลรวมโตสุด (cm)", 1.0, 4.0, 2.0, 0.5)
 
     st.header("2) หน้าตัดคาน")
-    b = st.number_input("ความกว้าง b (mm)", 150.0, 2000.0, 300.0, 25.0)
-    h = st.number_input("ความลึก h (mm)", 200.0, 3000.0, 600.0, 25.0)
-    cover = st.number_input("ระยะหุ้มถึงผิวเหล็กปลอก (mm)", 20.0, 100.0, 40.0, 5.0,
-                            help="ACI 318-19 Table 20.5.1.3.1: ไม่สัมผัสดิน/อากาศ = 40 mm")
+    b_cm = st.number_input("ความกว้าง b (cm)", 15.0, 200.0, 30.0, 2.5)
+    h_cm = st.number_input("ความลึก h (cm)", 20.0, 300.0, 60.0, 2.5)
+    cover_cm = st.number_input("ระยะหุ้มถึงผิวเหล็กปลอก (cm)", 2.0, 10.0, 4.0, 0.5,
+                               help="ACI 318-19 Table 20.5.1.3.1: ไม่สัมผัสดิน/อากาศ = 4 cm")
     span = st.number_input("ความยาวช่วงคาน L (m)", 0.5, 30.0, 6.0, 0.5)
     support = st.selectbox("สภาพที่รองรับ (สำหรับความลึกต่ำสุด Table 9.3.1.1)",
                            ["Simply supported", "One end continuous", "Both ends continuous",
@@ -65,15 +101,15 @@ with st.sidebar:
     st.header("3) แรงกระทำ")
     load_mode = st.radio("วิธีป้อนแรง", ["ป้อน Mu, Vu โดยตรง", "น้ำหนักแผ่สม่ำเสมอ"])
     if load_mode == "ป้อน Mu, Vu โดยตรง":
-        Mu_kNm = st.number_input("Mu (kN·m)", 0.0, 1e5, 250.0, 5.0)
-        Vu_kN = st.number_input("Vu ที่หน้าตัดวิกฤต (kN)", 0.0, 1e5, 200.0, 5.0)
+        Mu_in = st.number_input("Mu (kg-m)", 0.0, 1e7, 25000.0, 500.0)
+        Vu_in = st.number_input("Vu ที่หน้าตัดวิกฤต (kg)", 0.0, 1e7, 20000.0, 500.0)
         load_info = None
     else:
-        sys = st.selectbox("ระบบโครงสร้าง", ["คานช่วงเดียวธรรมดา", "คานยื่น"])
-        wD_sdl = st.number_input("น้ำหนักบรรทุกคงที่เพิ่มเติม wD (kN/m)", 0.0, 1e4, 15.0, 1.0)
-        wL = st.number_input("น้ำหนักบรรทุกจร wL (kN/m)", 0.0, 1e4, 10.0, 1.0)
-        self_wt = st.checkbox("รวมน้ำหนักคานเอง (24 kN/m³)", True)
-        load_info = dict(sys=sys, wD_sdl=wD_sdl, wL=wL, self_wt=self_wt)
+        system = st.selectbox("ระบบโครงสร้าง", ["คานช่วงเดียวธรรมดา", "คานยื่น"])
+        wD_sdl = st.number_input("น้ำหนักบรรทุกคงที่เพิ่มเติม wD (kg/m)", 0.0, 1e6, 1500.0, 100.0)
+        wL = st.number_input("น้ำหนักบรรทุกจร wL (kg/m)", 0.0, 1e6, 1000.0, 100.0)
+        self_wt = st.checkbox("รวมน้ำหนักคานเอง (2,400 kg/m³)", True)
+        load_info = dict(system=system, wD_sdl=wD_sdl, wL=wL, self_wt=self_wt)
 
     st.header("4) เหล็กเสริม")
     bars = list(aci.BAR_SIZES)
@@ -85,52 +121,57 @@ with st.sidebar:
     if mode == "กำหนดเอง (ตรวจสอบ)":
         n_t_user = st.number_input("จำนวนเหล็กล่าง (เส้น)", 2, 60, 4, 1)
         n_c_user = st.number_input("จำนวนเหล็กบน (เส้น)", 2, 60, 2, 1)
-        s_user = st.number_input("ระยะเรียงเหล็กปลอก s (mm)", 50.0, 600.0, 200.0, 25.0)
+        s_user_cm = st.number_input("ระยะเรียงเหล็กปลอก s (cm)", 5.0, 60.0, 20.0, 2.5)
     else:
-        n_t_user = n_c_user = s_user = None
+        n_t_user = n_c_user = s_user_cm = None
 
+# --- convert inputs to SI for the calculation core ---
+fc, fy, fyt = ksc_to_mpa(fc_k), ksc_to_mpa(fy_k), ksc_to_mpa(fyt_k)
+b, h, cover = cm_to_mm(b_cm), cm_to_mm(h_cm), cm_to_mm(cover_cm)
+d_agg = cm_to_mm(agg_cm)
+s_user = cm_to_mm(s_user_cm) if s_user_cm else None
 db_t = aci.BAR_SIZES[db_t_name]
 db_c = aci.BAR_SIZES[db_c_name]
 d_s = aci.BAR_SIZES[ds_name]
 
 # ---------------------------------------------------------------------------
-# Loads
+# Loads (kg, m)
 # ---------------------------------------------------------------------------
-d_est = h - cover - d_s - db_t / 2.0
+d_est_m = (h - cover - d_s - db_t / 2.0) / 1000.0
 if load_info is None:
-    Mu_kNm_design, Vu_kN_design = Mu_kNm, Vu_kN
-    load_lines = [f"Mu = {Mu_kNm:.2f} kN·m (ผู้ใช้กำหนด)", f"Vu = {Vu_kN:.2f} kN (ผู้ใช้กำหนด)"]
+    Mu_kgm, Vu_kg = Mu_in, Vu_in
+    load_lines = [f"Mu = {Mu_kgm:,.0f} kg-m (ผู้ใช้กำหนด)", f"Vu = {Vu_kg:,.0f} kg (ผู้ใช้กำหนด)"]
 else:
-    w_sw = 24.0 * b * h / 1e6 if load_info["self_wt"] else 0.0
+    w_sw = 2400.0 * b_cm / 100.0 * h_cm / 100.0 if load_info["self_wt"] else 0.0
     wD = load_info["wD_sdl"] + w_sw
     wu, combo = aci.factored_line_load(wD, load_info["wL"])
-    if load_info["sys"] == "คานช่วงเดียวธรรมดา":
-        Mu_kNm_design = wu * span ** 2 / 8.0
-        Vu_kN_design = wu * max(span / 2.0 - d_est / 1000.0, 0.0)
+    if load_info["system"] == "คานช่วงเดียวธรรมดา":
+        Mu_kgm = wu * span ** 2 / 8.0
+        Vu_kg = wu * max(span / 2.0 - d_est_m, 0.0)
         m_txt, v_txt = "wu·L²/8", "wu·(L/2 − d)"
     else:
-        Mu_kNm_design = wu * span ** 2 / 2.0
-        Vu_kN_design = wu * max(span - d_est / 1000.0, 0.0)
+        Mu_kgm = wu * span ** 2 / 2.0
+        Vu_kg = wu * max(span - d_est_m, 0.0)
         m_txt, v_txt = "wu·L²/2", "wu·(L − d)"
     load_lines = [
-        f"น้ำหนักคานเอง = 24 × {b / 1000:.3f} × {h / 1000:.3f} = {w_sw:.2f} kN/m",
-        f"wD = {wD:.2f} kN/m, wL = {load_info['wL']:.2f} kN/m",
-        f"wu = max(1.4D, 1.2D + 1.6L) = {wu:.2f} kN/m  [{combo}]  (ACI 5.3.1)",
-        f"Mu = {m_txt} = {Mu_kNm_design:.2f} kN·m",
-        f"Vu (ที่ระยะ d จากหน้าที่รองรับ, 9.4.3.2) = {v_txt} = {Vu_kN_design:.2f} kN",
+        f"น้ำหนักคานเอง = 2,400 × {b_cm / 100:.2f} × {h_cm / 100:.2f} = {w_sw:,.0f} kg/m",
+        f"wD = {wD:,.0f} kg/m, wL = {load_info['wL']:,.0f} kg/m",
+        f"wu = max(1.4D, 1.2D + 1.6L) = {wu:,.0f} kg/m  [{combo}]  (ACI 5.3.1)",
+        f"Mu = {m_txt} = {Mu_kgm:,.0f} kg-m",
+        f"Vu (ที่ระยะ d จากหน้าที่รองรับ, 9.4.3.2) = {v_txt} = {Vu_kg:,.0f} kg",
     ]
 
-Mu = Mu_kNm_design * 1e6
-Vu = Vu_kN_design * 1e3
+Mu = kgm_to_nmm(Mu_kgm)
+Vu = kg_to_n(Vu_kg)
 
 # ---------------------------------------------------------------------------
-# Design
+# Design (SI core)
 # ---------------------------------------------------------------------------
 errors = []
 if fy > 550:
-    errors.append("fy สำหรับเหล็กรับแรงดัดต้องไม่เกิน 550 MPa (Table 20.2.2.4a)")
+    errors.append("fy สำหรับเหล็กรับแรงดัดต้องไม่เกิน 550 MPa ≈ 5,600 ksc (Table 20.2.2.4a)")
 if fc < 17:
-    errors.append("f'c ต้องไม่น้อยกว่า 17 MPa (Table 19.2.1.1)")
+    errors.append("f'c ต้องไม่น้อยกว่า 17 MPa ≈ 175 ksc (Table 19.2.1.1)")
 for e in errors:
     st.error(e)
 
@@ -163,24 +204,37 @@ checks = {
 }
 all_ok = all(checks.values()) and not errors
 
+# --- results in MKS for display ---
+phi_Mn_kgm = nmm_to_kgm(res.phi_Mn)
+Mn_kgm = nmm_to_kgm(res.Mn)
+phi_Vn_kg = n_to_kg(shear.phi_Vn)
+Vc_kg = n_to_kg(shear.Vc)
+Vs_kg = n_to_kg(shear.Vs)
+Vs_req_kg = n_to_kg(shear.Vs_req)
+phi_Vn_max_kg = n_to_kg(shear.phi_Vn_max)
+d_cm, dt_cm, dc_cm = mm_to_cm(d), mm_to_cm(flex.dt), mm_to_cm(flex.d_comp)
+As_cm2 = mm2_to_cm2(flex.tension.area)
+Asc_cm2 = mm2_to_cm2(flex.compression.area)
+s_prov_cm = mm_to_cm(shear.s_provided)
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
-t_lay = " + ".join(f"{k}" for k in flex.tension.layers)
-c_lay = " + ".join(f"{k}" for k in flex.compression.layers)
+t_lay = " + ".join(str(k) for k in flex.tension.layers)
+c_lay = " + ".join(str(k) for k in flex.compression.layers)
 bot_txt = f"{flex.tension.n}-{db_t_name}" + (f" ({t_lay} ชั้น)" if len(flex.tension.layers) > 1 else "")
 top_txt = f"{flex.compression.n}-{db_c_name}" + (f" ({c_lay} ชั้น)" if len(flex.compression.layers) > 1 else "")
-stir_txt = f"{ds_name} @ {shear.s_provided:.0f} mm ({legs} ขา)"
+stir_txt = f"{ds_name} @ {s_prov_cm:.1f} cm ({legs} ขา)"
 
 if all_ok:
-    st.success(f"**{beam_id} {b:.0f}×{h:.0f} mm** — ผ่านทุกข้อกำหนด")
+    st.success(f"**{beam_id} {b_cm:g}×{h_cm:g} cm** — ผ่านทุกข้อกำหนด")
 else:
-    st.error(f"**{beam_id} {b:.0f}×{h:.0f} mm** — มีรายการไม่ผ่าน กรุณาปรับหน้าตัดหรือเหล็กเสริม")
+    st.error(f"**{beam_id} {b_cm:g}×{h_cm:g} cm** — มีรายการไม่ผ่าน กรุณาปรับหน้าตัดหรือเหล็กเสริม")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("เหล็กล่าง", bot_txt, f"As = {flex.tension.area:.0f} mm²", delta_color="off")
-c2.metric("เหล็กบน", top_txt, f"A's = {flex.compression.area:.0f} mm²", delta_color="off")
-c3.metric("เหล็กปลอก", stir_txt, delta_color="off")
+c1.metric("เหล็กล่าง", bot_txt, f"As = {As_cm2:.2f} cm²", delta_color="off")
+c2.metric("เหล็กบน", top_txt, f"A's = {Asc_cm2:.2f} cm²", delta_color="off")
+c3.metric("เหล็กปลอก", stir_txt)
 c4.metric("อัตราส่วนการใช้งาน", f"M {Mu / res.phi_Mn:.2f} | V {Vu / shear.phi_Vn:.2f}"
           if res.phi_Mn > 0 and shear.phi_Vn > 0 else "-")
 
@@ -194,12 +248,13 @@ with tab_sum:
     st.subheader("ผลการตรวจสอบ")
     st.table({"รายการ": list(checks), "ผล": [ok(v) for v in checks.values()]})
     st.subheader("ความลึกต่ำสุด (Table 9.3.1.1) — ไม่ต้องตรวจสอบการแอ่นตัว")
+    h_min_cm = mm_to_cm(h_min)
     if h >= h_min:
-        st.info(f"h = {h:.0f} mm ≥ h,min = {h_min:.0f} mm → ไม่ต้องคำนวณการแอ่นตัว")
+        st.info(f"h = {h_cm:g} cm ≥ h,min = {h_min_cm:.1f} cm → ไม่ต้องคำนวณการแอ่นตัว")
     else:
-        st.warning(f"h = {h:.0f} mm < h,min = {h_min:.0f} mm → ต้องคำนวณการแอ่นตัวตาม 24.2")
+        st.warning(f"h = {h_cm:g} cm < h,min = {h_min_cm:.1f} cm → ต้องคำนวณการแอ่นตัวตาม 24.2")
     if h > 900:
-        st.warning("h > 900 mm → ต้องเสริมเหล็กผิว (skin reinforcement) ตาม 9.7.2.3")
+        st.warning("h > 90 cm → ต้องเสริมเหล็กผิว (skin reinforcement) ตาม 9.7.2.3")
 
 with tab_flex:
     b1 = aci.beta1(fc)
@@ -208,134 +263,142 @@ with tab_flex:
 | รายการ | ค่า | อ้างอิง |
 |---|---|---|
 | β₁ | {b1:.3f} | Table 22.2.2.4.3 |
-| d (ถึงศูนย์ถ่วงเหล็กล่าง) | {d:.1f} mm | |
-| dt (ถึงเหล็กชั้นนอกสุด) | {flex.dt:.1f} mm | |
-| d' (ถึงศูนย์ถ่วงเหล็กบน) | {flex.d_comp:.1f} mm | |
-| As,req | {flex.As_req:.0f} mm² | 22.2 |
-| A's,req | {flex.Asc_req:.0f} mm² | {"ต้องใช้เหล็กรับแรงอัด" if flex.Asc_req > 0 else "หน้าตัดเสริมเหล็กรับแรงดึงอย่างเดียว"} |
-| As,min = max(0.25√f'c, 1.4)·b·d/fy | {flex.As_min:.0f} mm² | 9.6.1.2 |
-| As,provided | {flex.tension.area:.0f} mm² | |
+| d (ถึงศูนย์ถ่วงเหล็กล่าง) | {d_cm:.2f} cm | |
+| dt (ถึงเหล็กชั้นนอกสุด) | {dt_cm:.2f} cm | |
+| d' (ถึงศูนย์ถ่วงเหล็กบน) | {dc_cm:.2f} cm | |
+| As,req | {mm2_to_cm2(flex.As_req):.2f} cm² | 22.2 |
+| A's,req | {mm2_to_cm2(flex.Asc_req):.2f} cm² | {"ต้องใช้เหล็กรับแรงอัด" if flex.Asc_req > 0 else "เสริมเหล็กรับแรงดึงอย่างเดียว"} |
+| As,min = max({C_ASMIN1:.2f}√f'c, {C_ASMIN2:.1f})·b·d/fy | {mm2_to_cm2(flex.As_min):.2f} cm² | 9.6.1.2 |
+| As,provided | {As_cm2:.2f} cm² | |
 | ρ = As/(b·d) | {flex.tension.area / (b * d):.4f} | |
-| c (strain compatibility) | {res.c:.1f} mm | 22.2.1 |
-| a = β₁c | {res.a:.1f} mm | 22.2.2.4.1 |
-| εt | {res.eps_t:.5f} (εty = {eps_ty:.5f}) | |
+| c (strain compatibility) | {mm_to_cm(res.c):.2f} cm | 22.2.1 |
+| a = β₁c | {mm_to_cm(res.a):.2f} cm | 22.2.2.4.1 |
+| εt | {res.eps_t:.5f} (εty = fy/Es = {eps_ty:.5f}) | |
 | การจำแนกหน้าตัด | {res.classification} | Table 21.2.2 |
 | φ | {res.phi:.3f} | Table 21.2.2 |
-| Mn | {res.Mn / 1e6:.2f} kN·m | |
-| **φMn** | **{res.phi_Mn / 1e6:.2f} kN·m** | |
-| Mu | {Mu / 1e6:.2f} kN·m | {ok(res.phi_Mn >= Mu)} |
+| Mn | {Mn_kgm:,.0f} kg-m | |
+| **φMn** | **{phi_Mn_kgm:,.0f} kg-m** | |
+| Mu | {Mu_kgm:,.0f} kg-m | {ok(res.phi_Mn >= Mu)} |
 """)
+    st.caption("Es = 2.04 × 10⁶ ksc (200,000 MPa), εcu = 0.003")
     st.markdown("**แรงและหน่วยแรงในเหล็กเสริมแต่ละชั้น** (+ = อัด, − = ดึง)")
     st.table({
-        "ความลึกจากผิวบน (mm)": [f"{s['depth']:.1f}" for s in res.steel],
-        "As (mm²)": [f"{s['area']:.0f}" for s in res.steel],
+        "ความลึกจากผิวบน (cm)": [f"{mm_to_cm(s['depth']):.2f}" for s in res.steel],
+        "As (cm²)": [f"{mm2_to_cm2(s['area']):.2f}" for s in res.steel],
         "ความเครียด ε": [f"{s['strain']:.5f}" for s in res.steel],
-        "fs (MPa)": [f"{s['stress']:.1f}" for s in res.steel],
-        "แรง (kN)": [f"{s['force'] / 1e3:.1f}" for s in res.steel],
+        "fs (ksc)": [f"{mpa_to_ksc(s['stress']):,.0f}" for s in res.steel],
+        "แรง (kg)": [f"{n_to_kg(s['force']):,.0f}" for s in res.steel],
     })
+    fs_k = 2.0 / 3.0 * fy_k
     st.markdown(f"""
-**การควบคุมรอยร้าว (24.3.2)**: fs = ⅔fy = {2 / 3 * fy:.0f} MPa, cc = {cover + d_s:.0f} mm
-s,max = min[380(280/fs) − 2.5cc, 300(280/fs)] = **{s_crack:.0f} mm**;
-ระยะเหล็กล่างชั้นนอก (ศูนย์กลางถึงศูนย์กลาง) = {s_bot_cc:.0f} mm → {ok(s_bot_cc <= s_crack)}
+**การควบคุมรอยร้าว (24.3.2)**: fs = ⅔fy = {fs_k:,.0f} ksc, cc = {cover_cm + d_s / 10:.1f} cm
+s,max = min[38(2,855/fs) − 2.5cc, 30(2,855/fs)] = **{mm_to_cm(s_crack):.1f} cm**;
+ระยะเหล็กล่างชั้นนอก (ศูนย์กลางถึงศูนย์กลาง) = {mm_to_cm(s_bot_cc):.1f} cm → {ok(s_bot_cc <= s_crack)}
 
-**ระยะช่องว่างระหว่างเหล็ก (25.2.1)**: ต้องการ ≥ max(25, db, 4/3·dagg)
-— ล่าง: {flex.tension.clear_spacing:.0f} ≥ {flex.tension.s_clear_min:.0f} mm {ok(flex.checks['spacing_t'])}
-— บน: {flex.compression.clear_spacing:.0f} ≥ {flex.compression.s_clear_min:.0f} mm {ok(flex.checks['spacing_c'])}
+**ระยะช่องว่างระหว่างเหล็ก (25.2.1)**: ต้องการ ≥ max(2.5 cm, db, 4/3·dagg)
+— ล่าง: {mm_to_cm(flex.tension.clear_spacing):.1f} ≥ {mm_to_cm(flex.tension.s_clear_min):.1f} cm {ok(flex.checks['spacing_t'])}
+— บน: {mm_to_cm(flex.compression.clear_spacing):.1f} ≥ {mm_to_cm(flex.compression.s_clear_min):.1f} cm {ok(flex.checks['spacing_c'])}
 """)
 
 with tab_shear:
-    sqrt_fc = min(math.sqrt(fc), 8.3)
+    sqrt_fc_k = min(math.sqrt(fc_k), SQRT_FC_LIM)
     st.markdown(f"""
 | รายการ | ค่า | อ้างอิง |
 |---|---|---|
-| Vu | {Vu / 1e3:.2f} kN | |
-| √f'c (≤ 8.3 MPa) | {sqrt_fc:.2f} MPa | 22.5.3.1 |
-| fyt ใช้คำนวณ (≤ 420 MPa) | {min(fyt, 420):.0f} MPa | 20.2.2.4 |
+| Vu | {Vu_kg:,.0f} kg | |
+| √f'c (≤ {SQRT_FC_LIM:.1f}) | {sqrt_fc_k:.2f} √ksc | 22.5.3.1 |
+| fyt ใช้คำนวณ (≤ 4,280 ksc) | {min(fyt_k, mpa_to_ksc(420)):,.0f} ksc | 20.2.2.4 |
 | ρw = As/(bw·d) | {flex.tension.area / (b * d):.4f} | |
-| λs = √(2/(1+0.004d)) ≤ 1 | {shear.lambda_s:.3f} | 22.5.5.1.3 |
-| Vc | {shear.Vc / 1e3:.2f} kN | Table 22.5.5.1 |
-| φVc | {aci.PHI_SHEAR * shear.Vc / 1e3:.2f} kN | φ = 0.75 |
-| ต้องใช้ Av,min หรือไม่ (Vu > φ0.083λ√f'c·bw·d) | {"ใช่" if shear.av_min_required else "ไม่ (แต่แนะนำให้ใส่)"} | 9.6.3.1 |
-| Av,min/s | {shear.Av_min_s:.4f} mm²/mm | 9.6.3.4 |
-| Vs,req = Vu/φ − Vc | {shear.Vs_req / 1e3:.2f} kN | 22.5.8.5.3 |
-| Av ({legs} ขา {ds_name}) | {shear.Av:.1f} mm² | |
-| s,max | {shear.s_max:.0f} mm | 9.7.6.2.2 |
-| s,required | {shear.s_req:.0f} mm | |
-| **s,provided** | **{shear.s_provided:.0f} mm** | |
-| Vs = Av·fyt·d/s | {shear.Vs / 1e3:.2f} kN | 22.5.8.5.3 |
-| **φVn = φ(Vc + Vs)** | **{shear.phi_Vn / 1e3:.2f} kN** | {ok(shear.phi_Vn >= Vu)} |
-| φ(Vc + 0.66√f'c·bw·d) | {shear.phi_Vn_max / 1e3:.2f} kN | 22.5.1.2 {ok(Vu <= shear.phi_Vn_max)} |
+| λs = √(2/(1+0.04d)) ≤ 1 (d เป็น cm) | {shear.lambda_s:.3f} | 22.5.5.1.3 |
+| Vc = max({C_VC:.2f}λ√f'c, {C_VC_RHO:.2f}λρw^⅓√f'c)·bw·d ≤ {C_VC_MAX:.2f}λ√f'c·bw·d | {Vc_kg:,.0f} kg | Table 22.5.5.1 |
+| φVc | {0.75 * Vc_kg:,.0f} kg | φ = 0.75 |
+| ต้องใช้ Av,min หรือไม่ (Vu > φ{C_AVMIN_TRIG:.2f}λ√f'c·bw·d) | {"ใช่" if shear.av_min_required else "ไม่ (แต่แนะนำให้ใส่)"} | 9.6.3.1 |
+| Av,min/s = max({C_AVMIN1:.2f}√f'c, {C_AVMIN2:.1f})·bw/fyt | {shear.Av_min_s * 10:.4f} cm²/cm | 9.6.3.4 |
+| Vs,req = Vu/φ − Vc | {Vs_req_kg:,.0f} kg | 22.5.8.5.3 |
+| Av ({legs} ขา {ds_name}) | {mm2_to_cm2(shear.Av):.2f} cm² | |
+| s,max (d/2 ≤ 60 cm หรือ d/4 ≤ 30 cm ถ้า Vs > {C_SMAX:.2f}√f'c·bw·d) | {mm_to_cm(shear.s_max):.1f} cm | 9.7.6.2.2 |
+| s,required | {mm_to_cm(shear.s_req):.1f} cm | |
+| **s,provided** | **{s_prov_cm:.1f} cm** | |
+| Vs = Av·fyt·d/s | {Vs_kg:,.0f} kg | 22.5.8.5.3 |
+| **φVn = φ(Vc + Vs)** | **{phi_Vn_kg:,.0f} kg** | {ok(shear.phi_Vn >= Vu)} |
+| φ(Vc + {C_VS_MAX:.2f}√f'c·bw·d) | {phi_Vn_max_kg:,.0f} kg | 22.5.1.2 {ok(Vu <= shear.phi_Vn_max)} |
 """)
     for n in shear.notes:
-        st.info(n)
+        st.info(n.replace("420 MPa", "420 MPa ≈ 4,280 ksc"))
 
 with tab_sec:
-    fig, ax = plt.subplots(figsize=(4.5, 4.5 * h / b if h / b < 2.5 else 10))
-    ax.add_patch(Rectangle((0, 0), b, h, fc="#d9d9d9", ec="black", lw=1.5))
-    ax.add_patch(FancyBboxPatch((cover + d_s / 2, cover + d_s / 2), b - 2 * cover - d_s,
-                                h - 2 * cover - d_s, boxstyle=f"round,pad=0,rounding_size={2 * d_s}",
+    # drawing in cm
+    cv, ds_c = cover_cm, d_s / 10.0
+    fig, ax = plt.subplots(figsize=(4.5, min(4.5 * h_cm / b_cm, 10)))
+    ax.add_patch(Rectangle((0, 0), b_cm, h_cm, fc="#d9d9d9", ec="black", lw=1.5))
+    ax.add_patch(FancyBboxPatch((cv + ds_c / 2, cv + ds_c / 2), b_cm - 2 * cv - ds_c,
+                                h_cm - 2 * cv - ds_c,
+                                boxstyle=f"round,pad=0,rounding_size={2 * ds_c}",
                                 fill=False, ec="#1f4e79", lw=2))
 
-    def draw(layout, db, from_top: bool, color):
-        x0 = cover + d_s + db / 2
-        width = b - 2 * (cover + d_s) - db
+    def draw(layout, db_mm, from_top: bool, color):
+        r = db_mm / 20.0
+        x0 = cv + ds_c + r
+        width = b_cm - 2 * (cv + ds_c) - 2 * r
         for k, y in zip(layout.layers, layout.depths):
-            yy = h - y if from_top else y
+            y_cm = y / 10.0
+            yy = h_cm - y_cm if from_top else y_cm
             xs = [x0 + width / 2] if k == 1 else [x0 + i * width / (k - 1) for i in range(k)]
             for x in xs:
-                ax.add_patch(Circle((x, yy), db / 2, fc=color, ec="black"))
+                ax.add_patch(Circle((x, yy), r, fc=color, ec="black"))
 
     draw(flex.tension, db_t, False, "#c00000")
     draw(flex.compression, db_c, True, "#2e75b6")
-    ax.annotate("", (0, -30), (b, -30), arrowprops=dict(arrowstyle="<->"))
-    ax.text(b / 2, -60, f"b = {b:.0f}", ha="center", va="top")
-    ax.annotate("", (-30, 0), (-30, h), arrowprops=dict(arrowstyle="<->"))
-    ax.text(-60, h / 2, f"h = {h:.0f}", ha="right", va="center", rotation=90)
-    ax.set_xlim(-150, b + 50)
-    ax.set_ylim(-130, h + 50)
+    ax.annotate("", (0, -3), (b_cm, -3), arrowprops=dict(arrowstyle="<->"))
+    ax.text(b_cm / 2, -6, f"b = {b_cm:g} cm", ha="center", va="top")
+    ax.annotate("", (-3, 0), (-3, h_cm), arrowprops=dict(arrowstyle="<->"))
+    ax.text(-6, h_cm / 2, f"h = {h_cm:g} cm", ha="right", va="center", rotation=90)
+    ax.set_xlim(-15, b_cm + 5)
+    ax.set_ylim(-13, h_cm + 5)
     ax.set_aspect("equal")
     ax.axis("off")
-    ax.set_title(f"{beam_id}  {b:.0f}×{h:.0f}")
+    ax.set_title(f"{beam_id}  {b_cm:g}×{h_cm:g} cm")
     col_a, col_b = st.columns([1, 1])
     col_a.pyplot(fig)
     col_b.markdown(f"""
 **เหล็กบน:** {top_txt}
 **เหล็กล่าง:** {bot_txt}
 **เหล็กปลอก:** {stir_txt}
-**ระยะหุ้ม:** {cover:.0f} mm
-**f'c:** {fc:.1f} MPa ({fc / aci.KSC_TO_MPA:.0f} ksc), **fy:** {fy:.0f} MPa, **fyt:** {fyt:.0f} MPa
+**ระยะหุ้ม:** {cover_cm:g} cm
+**f'c:** {fc_k:,.0f} ksc, **fy:** {fy_k:,.0f} ksc, **fyt:** {fyt_k:,.0f} ksc
 """)
 
 with tab_sheet:
     sheet = f"""# รายการคำนวณออกแบบคาน {beam_id}
-โครงการ: {project}  วันที่: {date.today():%d/%m/%Y}  มาตรฐาน: ACI 318-19
+โครงการ: {project}  วันที่: {date.today():%d/%m/%Y}  มาตรฐาน: ACI 318-19  หน่วย: cm, kg
 
 ## 1. ข้อมูล
-- f'c = {fc:.2f} MPa, fy = {fy:.0f} MPa, fyt = {fyt:.0f} MPa, Es = 200,000 MPa, λ = {lam}
-- b × h = {b:.0f} × {h:.0f} mm, ระยะหุ้ม = {cover:.0f} mm, L = {span:.2f} m ({support})
+- f'c = {fc_k:,.0f} ksc, fy = {fy_k:,.0f} ksc, fyt = {fyt_k:,.0f} ksc, Es = 2.04×10⁶ ksc, λ = {lam}
+- b × h = {b_cm:g} × {h_cm:g} cm, ระยะหุ้ม = {cover_cm:g} cm, L = {span:.2f} m ({support})
 
 ## 2. แรงออกแบบ
 """ + "\n".join(f"- {l}" for l in load_lines) + f"""
 
 ## 3. ออกแบบรับแรงดัด
-- β1 = {aci.beta1(fc):.3f}, d = {d:.1f} mm, dt = {flex.dt:.1f} mm, d' = {flex.d_comp:.1f} mm
-- As,req = {flex.As_req:.0f} mm², A's,req = {flex.Asc_req:.0f} mm², As,min = {flex.As_min:.0f} mm²
-- ใช้เหล็กล่าง {bot_txt}: As = {flex.tension.area:.0f} mm²; เหล็กบน {top_txt}: A's = {flex.compression.area:.0f} mm²
-- c = {res.c:.1f} mm, a = {res.a:.1f} mm, εt = {res.eps_t:.5f} → {res.classification}, φ = {res.phi:.3f}
-- φMn = {res.phi:.3f} × {res.Mn / 1e6:.2f} = {res.phi_Mn / 1e6:.2f} kN·m {"≥" if res.phi_Mn >= Mu else "<"} Mu = {Mu / 1e6:.2f} kN·m → {ok(res.phi_Mn >= Mu)}
+- β1 = {aci.beta1(fc):.3f}, d = {d_cm:.2f} cm, dt = {dt_cm:.2f} cm, d' = {dc_cm:.2f} cm
+- As,req = {mm2_to_cm2(flex.As_req):.2f} cm², A's,req = {mm2_to_cm2(flex.Asc_req):.2f} cm², As,min = {mm2_to_cm2(flex.As_min):.2f} cm²
+- ใช้เหล็กล่าง {bot_txt}: As = {As_cm2:.2f} cm²; เหล็กบน {top_txt}: A's = {Asc_cm2:.2f} cm²
+- c = {mm_to_cm(res.c):.2f} cm, a = {mm_to_cm(res.a):.2f} cm, εt = {res.eps_t:.5f} → {res.classification}, φ = {res.phi:.3f}
+- φMn = {res.phi:.3f} × {Mn_kgm:,.0f} = {phi_Mn_kgm:,.0f} kg-m {"≥" if res.phi_Mn >= Mu else "<"} Mu = {Mu_kgm:,.0f} kg-m → {ok(res.phi_Mn >= Mu)}
 
 ## 4. ออกแบบรับแรงเฉือน
-- Vc = {shear.Vc / 1e3:.2f} kN, φVc = {0.75 * shear.Vc / 1e3:.2f} kN
-- Vs,req = {shear.Vs_req / 1e3:.2f} kN, s,max = {shear.s_max:.0f} mm
-- ใช้เหล็กปลอก {stir_txt}: Vs = {shear.Vs / 1e3:.2f} kN
-- φVn = {shear.phi_Vn / 1e3:.2f} kN {"≥" if shear.phi_Vn >= Vu else "<"} Vu = {Vu / 1e3:.2f} kN → {ok(shear.phi_Vn >= Vu)}
+- Vc = {Vc_kg:,.0f} kg, φVc = {0.75 * Vc_kg:,.0f} kg
+- Vs,req = {Vs_req_kg:,.0f} kg, s,max = {mm_to_cm(shear.s_max):.1f} cm
+- ใช้เหล็กปลอก {stir_txt}: Vs = {Vs_kg:,.0f} kg
+- φVn = {phi_Vn_kg:,.0f} kg {"≥" if shear.phi_Vn >= Vu else "<"} Vu = {Vu_kg:,.0f} kg → {ok(shear.phi_Vn >= Vu)}
 
 ## 5. สรุปการตรวจสอบ
 """ + "\n".join(f"- {k}: {ok(v)}" for k, v in checks.items()) + f"""
-- ความลึกต่ำสุด h,min = {h_min:.0f} mm (Table 9.3.1.1) → {"ไม่ต้องตรวจการแอ่นตัว" if h >= h_min else "ต้องตรวจการแอ่นตัว"}
+- ความลึกต่ำสุด h,min = {mm_to_cm(h_min):.1f} cm (Table 9.3.1.1) → {"ไม่ต้องตรวจการแอ่นตัว" if h >= h_min else "ต้องตรวจการแอ่นตัว"}
 """
     st.markdown(sheet)
     st.download_button("⬇️ ดาวน์โหลดรายการคำนวณ (.md)", sheet, file_name=f"{beam_id}_calc.md")
 
 st.caption("หมายเหตุ: โปรแกรมนี้ใช้เพื่อช่วยคำนวณเบื้องต้น ผู้ออกแบบต้องตรวจสอบผลการคำนวณและรับผิดชอบงานออกแบบด้วยตนเอง "
-           "(ไม่รวมการออกแบบรับแรงบิด ระยะฝังยึด/ต่อทาบ และการคำนวณการแอ่นตัว)")
+           "(ไม่รวมการออกแบบรับแรงบิด ระยะฝังยึด/ต่อทาบ และการคำนวณการแอ่นตัว) · "
+           "สมการ ACI 318-19 (SI) แปลงเป็นหน่วย kg-cm ด้วย 1 kg = 9.80665 N")
