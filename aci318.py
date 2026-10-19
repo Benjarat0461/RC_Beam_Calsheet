@@ -162,8 +162,10 @@ class BarLayout:
     db: float
     layers: list[int]            # bars per layer, layer 0 nearest the face
     depths: list[float]          # depth of each layer centroid measured from the *same* face
-    clear_spacing: float         # clear spacing between bars in the fullest layer
+    x: list[list[float]]         # bar centres in each layer, measured from the left face
+    clear_spacing: float         # smallest clear spacing between adjacent bars in layer 0
     s_clear_min: float
+    per_layer: int               # bars allowed per layer
 
     @property
     def area(self) -> float:
@@ -173,22 +175,53 @@ class BarLayout:
     def centroid(self) -> float:
         return sum(k * y for k, y in zip(self.layers, self.depths)) / self.n
 
+    @property
+    def cc_spacing(self) -> float:
+        """Largest centre-to-centre spacing of the layer nearest the face (24.3.2)."""
+        xs = self.x[0]
+        return max((b - a for a, b in zip(xs, xs[1:])), default=0.0)
+
+    @property
+    def symmetric(self) -> bool:
+        return all(all(abs(a + b - xs[0] - xs[-1]) < 1e-6 for a, b in zip(xs, reversed(xs)))
+                   for xs in self.x)
+
 
 def min_clear_spacing(db: float, d_agg: float) -> float:
     """25.2.1: max(25 mm, db, 4/3 d_agg)."""
     return max(25.0, db, 4.0 / 3.0 * d_agg)
 
 
-def arrange_bars(n: int, db: float, b: float, cover: float, d_stirrup: float,
-                 d_agg: float) -> BarLayout:
-    """Place n bars in as few layers as possible.
+def bars_per_layer_rule(b: float) -> int:
+    """Practice rule: bars in one layer = beam width in cm / 10 (30 cm -> 3), at least 2."""
+    return max(2, int(b // 100.0))
 
-    Depths are measured from the face nearest to the bars (cover face).
-    Clear vertical spacing between layers = max(25 mm, db) per 25.2.2.
+
+def _upper_layer_indices(n1: int, k: int) -> list[int]:
+    """Pick k of the n1 first-layer positions: corners first, working inwards in pairs,
+    with the centre position used for an odd count when the first layer has one."""
+    if k >= n1:
+        return list(range(n1))
+    pairs = k // 2
+    idx = [i for p in range(pairs) for i in (p, n1 - 1 - p)]
+    if k % 2:
+        idx.append(n1 // 2 if n1 % 2 else pairs)   # no centre bar for even n1 → next inner
+    return sorted(idx)
+
+
+def arrange_bars(n: int, db: float, b: float, cover: float, d_stirrup: float,
+                 d_agg: float, max_per_layer: int | None = None) -> BarLayout:
+    """Place n bars layer by layer.
+
+    Layer 0 holds up to `max_per_layer` bars (also limited by the clear spacing of
+    25.2.1), evenly spaced between the stirrup corners. Further layers are placed
+    directly above bars of layer 0. Depths are measured from the face nearest the
+    bars; clear vertical spacing between layers = max(25 mm, db) per 25.2.2.
     """
     s_min = min_clear_spacing(db, d_agg)
     width = b - 2.0 * cover - 2.0 * d_stirrup
-    per_layer = max(int((width - db) // (db + s_min)) + 1, 1)
+    fit = max(int((width - db) // (db + s_min)) + 1, 1)
+    per_layer = min(fit, max_per_layer) if max_per_layer else fit
     layers: list[int] = []
     remaining = n
     while remaining > 0:
@@ -198,10 +231,15 @@ def arrange_bars(n: int, db: float, b: float, cover: float, d_stirrup: float,
     y0 = cover + d_stirrup + db / 2.0
     v_gap = max(25.0, db) + db
     depths = [y0 + i * v_gap for i in range(len(layers))]
-    k_max = max(layers)
-    clear = (width - k_max * db) / (k_max - 1) if k_max > 1 else width - db
-    return BarLayout(n=n, db=db, layers=layers, depths=depths, clear_spacing=clear,
-                     s_clear_min=s_min)
+
+    n1 = layers[0]
+    x_left = cover + d_stirrup + db / 2.0
+    span = width - db
+    base = [b / 2.0] if n1 == 1 else [x_left + i * span / (n1 - 1) for i in range(n1)]
+    xs = [base] + [[base[i] for i in _upper_layer_indices(n1, k)] for k in layers[1:]]
+    clear = (span - (n1 - 1) * db) / (n1 - 1) if n1 > 1 else width - db
+    return BarLayout(n=n, db=db, layers=layers, depths=depths, x=xs, clear_spacing=clear,
+                     s_clear_min=s_min, per_layer=per_layer)
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +455,9 @@ class FlexureDesign:
 
 def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db_c,
                    As_req, Asc_req, k: Coefficients = ACI_SI,
-                   p: PhiFactors = PHI_ACI) -> FlexureDesign:
-    tens = arrange_bars(n_t, db_t, b, cover, d_stirrup, d_agg)
-    comp = arrange_bars(n_c, db_c, b, cover, d_stirrup, d_agg)
+                   p: PhiFactors = PHI_ACI, max_per_layer: int | None = None) -> FlexureDesign:
+    tens = arrange_bars(n_t, db_t, b, cover, d_stirrup, d_agg, max_per_layer)
+    comp = arrange_bars(n_c, db_c, b, cover, d_stirrup, d_agg, max_per_layer)
     d = h - tens.centroid
     dt = h - tens.depths[0]
     steel = [(k * bar_area(db_c), y) for k, y in zip(comp.layers, comp.depths)]
@@ -446,15 +484,20 @@ def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: f
                    d_stirrup: float, d_agg: float, db_t: float, db_c: float,
                    n_hanger: int = 2, n_t: int | None = None,
                    n_c: int | None = None, k: Coefficients = ACI_SI,
-                   p: PhiFactors = PHI_ACI) -> FlexureDesign:
-    """Select (or check, if n_t/n_c given) longitudinal bars for factored moment Mu (N-mm)."""
+                   p: PhiFactors = PHI_ACI, max_per_layer: int | None = None) -> FlexureDesign:
+    """Select (or check, if n_t/n_c given) longitudinal bars for factored moment Mu (N-mm).
+
+    max_per_layer limits the bars in one layer (e.g. bars_per_layer_rule(b)).
+    The automatic selection adds a bar when an upper layer cannot sit symmetrically
+    over the first layer.
+    """
     d0 = h - cover - d_stirrup - db_t / 2.0
     dc0 = cover + d_stirrup + db_c / 2.0
     As_req, Asc_req = required_steel(Mu, b, d0, dc0, fc, fy, p)
     manual = n_t is not None and n_c is not None
     if manual:
         return _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t,
-                              n_c, db_c, As_req, Asc_req, k, p)
+                              n_c, db_c, As_req, Asc_req, k, p, max_per_layer)
 
     As_min0 = as_min_flexure(fc, fy, b, d0, k)
     As_target = max(As_req, min(As_min0, 4.0 / 3.0 * As_req))
@@ -463,11 +506,14 @@ def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: f
     best = None
     for _ in range(100):
         best = _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, nt, db_t,
-                              nc, db_c, As_req, Asc_req, k, p)
+                              nc, db_c, As_req, Asc_req, k, p, max_per_layer)
         ck = best.checks
         if ck["strength"] and ck["as_min"] and ck["eps_t"]:
-            break
-        if not ck["eps_t"]:
+            if best.tension.symmetric and best.compression.symmetric:
+                break
+            nt += 0 if best.tension.symmetric else 1
+            nc += 0 if best.compression.symmetric else 1
+        elif not ck["eps_t"]:
             nc += 1
         else:
             nt += 1

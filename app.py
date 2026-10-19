@@ -113,6 +113,8 @@ with st.sidebar:
     db_c_name = st.selectbox("เหล็กรับแรงอัด/เหล็กยึดปลอก (บน)", bars, index=bars.index("DB16"))
     ds_name = st.selectbox("เหล็กปลอก", bars, index=bars.index("RB9"))
     legs = st.number_input("จำนวนขาเหล็กปลอก", 2, 8, 2, 1)
+    use_b10 = st.checkbox("จำนวนเหล็กต่อชั้น = b/10 (เช่น b = 30 cm → 3 เส้น)", True,
+                          help="ชั้นที่ 2 ขึ้นไปวางตรงกับตำแหน่งเหล็กชั้นแรก เริ่มจากมุมเข้าหากลาง")
     mode = st.radio("การเลือกเหล็ก", ["ออกแบบอัตโนมัติ", "กำหนดเอง (ตรวจสอบ)"])
     if mode == "กำหนดเอง (ตรวจสอบ)":
         n_t_user = st.number_input("จำนวนเหล็กล่าง (เส้น)", 2, 60, 4, 1)
@@ -191,7 +193,8 @@ for e in errors:
 
 try:
     flex = aci.design_flexure(Mu, b, h, fc, fy, cover, d_s, d_agg, db_t, db_c,
-                              n_t=n_t_user, n_c=n_c_user, k=k, p=phi_set)
+                              n_t=n_t_user, n_c=n_c_user, k=k, p=phi_set,
+                              max_per_layer=aci.bars_per_layer_rule(b) if use_b10 else None)
 except ValueError as exc:
     st.error(f"ไม่สามารถออกแบบได้: {exc}")
     st.stop()
@@ -201,8 +204,7 @@ d = flex.d
 shear = aci.shear_design(Vu, b, d, fc, fyt, flex.tension.area, d_s, int(legs), lam, s_user, k=k, p=phi_set)
 h_min = aci.min_thickness(span * 1000.0, support, fy, k)
 s_crack = aci.crack_control_spacing(fy, cover + d_s, k)
-n_bot = flex.tension.layers[0]
-s_bot_cc = (b - 2 * cover - 2 * d_s - db_t) / (n_bot - 1) if n_bot > 1 else 0.0
+s_bot_cc = flex.tension.cc_spacing
 
 checks = {
     "กำลังรับโมเมนต์ φMn ≥ Mu": flex.checks["strength"],
@@ -246,8 +248,10 @@ else:
     st.error(f"**{beam_id} {b_cm:g}×{h_cm:g} cm** — มีรายการไม่ผ่าน กรุณาปรับหน้าตัดหรือเหล็กเสริม")
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("เหล็กล่าง", bot_txt, f"As = {As_cm2:.2f} cm²", delta_color="off")
-c2.metric("เหล็กบน", top_txt, f"A's = {Asc_cm2:.2f} cm²", delta_color="off")
+c1.metric("เหล็กล่าง", f"{flex.tension.n}-{db_t_name}",
+          f"As = {As_cm2:.2f} cm² · ชั้น {t_lay}", delta_color="off")
+c2.metric("เหล็กบน", f"{flex.compression.n}-{db_c_name}",
+          f"A's = {Asc_cm2:.2f} cm² · ชั้น {c_lay}", delta_color="off")
 c3.metric("เหล็กปลอก", stir_txt)
 c4.metric("อัตราส่วนการใช้งาน", f"M {Mu / res.phi_Mn:.2f} | V {Vu / shear.phi_Vn:.2f}"
           if res.phi_Mn > 0 and shear.phi_Vn > 0 else "-")
@@ -318,7 +322,24 @@ s,max = min[38({C['fs_ref']:,.0f}/fs) − 2.5cc, 30({C['fs_ref']:,.0f}/fs)] = **
 **ระยะช่องว่างระหว่างเหล็ก (25.2.1)**: ต้องการ ≥ max(2.5 cm, db, 4/3·dagg)
 — ล่าง: {mm_to_cm(flex.tension.clear_spacing):.1f} ≥ {mm_to_cm(flex.tension.s_clear_min):.1f} cm {ok(flex.checks['spacing_t'])}
 — บน: {mm_to_cm(flex.compression.clear_spacing):.1f} ≥ {mm_to_cm(flex.compression.s_clear_min):.1f} cm {ok(flex.checks['spacing_c'])}
+
+**การจัดเหล็กเป็นชั้น**: จำนวนเหล็กต่อชั้นสูงสุด = {flex.tension.per_layer} เส้น (ล่าง), {flex.compression.per_layer} เส้น (บน)
+{"— ตามกฎ b/10 = " + f"{b_cm:g}/10 → {aci.bars_per_layer_rule(b)} เส้น และไม่เกินที่ระยะช่องว่างยอมให้" if use_b10 else "— จำกัดด้วยระยะช่องว่างขั้นต่ำเท่านั้น"};
+ชั้นที่ 2 ขึ้นไปวางตรงกับตำแหน่งเหล็กชั้นแรก (เริ่มจากมุมเข้าหากลาง)
 """)
+    layer_rows = []
+    for name, lay, from_top in (("ล่าง", flex.tension, False), ("บน", flex.compression, True)):
+        for i, (kk, y, xs) in enumerate(zip(lay.layers, lay.depths, lay.x), 1):
+            layer_rows.append({
+                "เหล็ก": name, "ชั้น": i, "จำนวน": kk,
+                "ระยะถึงศูนย์กลางเหล็ก (cm)": f"{mm_to_cm(y):.2f} จากผิว{'บน' if from_top else 'ล่าง'}",
+                "ตำแหน่ง x จากขอบซ้าย (cm)": ", ".join(f"{mm_to_cm(x):.1f}" for x in xs),
+            })
+    st.table(layer_rows)
+    for name, lay in (("ล่าง", flex.tension), ("บน", flex.compression)):
+        if not lay.symmetric:
+            st.warning(f"เหล็ก{name}ชั้นบนวางไม่สมมาตร (จำนวนคี่บนเหล็กชั้นแรกจำนวนคู่) "
+                       "— แนะนำปรับจำนวนเหล็กให้เป็นเลขคู่")
 
 with tab_shear:
     sqrt_fc_k = min(math.sqrt(fc_k), C['sqrt_fc_max'])
@@ -361,14 +382,11 @@ with tab_sec:
 
     def draw(layout, db_mm, from_top: bool, color):
         r = db_mm / 20.0
-        x0 = cv + ds_c + r
-        width = b_cm - 2 * (cv + ds_c) - 2 * r
-        for k, y in zip(layout.layers, layout.depths):
+        for y, xs in zip(layout.depths, layout.x):
             y_cm = y / 10.0
             yy = h_cm - y_cm if from_top else y_cm
-            xs = [x0 + width / 2] if k == 1 else [x0 + i * width / (k - 1) for i in range(k)]
             for x in xs:
-                ax.add_patch(Circle((x, yy), r, fc=color, ec="black"))
+                ax.add_patch(Circle((x / 10.0, yy), r, fc=color, ec="black"))
 
     draw(flex.tension, db_t, False, "#c00000")
     draw(flex.compression, db_c, True, "#2e75b6")

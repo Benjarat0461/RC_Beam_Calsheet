@@ -69,3 +69,12 @@ def test_phi_follows_load_combo():
     assert phi_v.value == "0.85"
     assert any("φ = 0.85" in m.value for m in at.markdown)
     assert any("0.70 ≤ φ ≤ 0.90" in m.value for m in at.markdown)
+
+
+def test_layer_table_follows_b10_rule():
+    at = _run()   # b = 30 cm, 5-DB20 → 3 + 2
+    assert at.metric[0].value == "5-DB20" and "3 + 2" in at.metric[0].delta
+    rows = at.table[-1].value
+    assert list(rows["จำนวน"]) == [3, 2, 2]
+    x1, x2 = rows["ตำแหน่ง x จากขอบซ้าย (cm)"].iloc[0], rows["ตำแหน่ง x จากขอบซ้าย (cm)"].iloc[1]
+    assert x2 == "5.9, 24.1" and x1.startswith("5.9") and x1.endswith("24.1")

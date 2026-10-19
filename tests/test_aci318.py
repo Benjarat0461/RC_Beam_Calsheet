@@ -105,3 +105,30 @@ def test_phi_legacy_set():
     b = aci.shear_design(150e3, 300, 540, 25, 420, 1500, 10, 2, s_user=200, p=p)
     assert b.phi_Vn / a.phi_Vn == pytest.approx(0.85 / 0.75)
     assert aci.COMBO_PHI["1.4D+1.7L"] is p and aci.COMBO_PHI["ACI"] is aci.PHI_ACI
+
+
+def test_bars_per_layer_rule():
+    assert aci.bars_per_layer_rule(300) == 3
+    assert aci.bars_per_layer_rule(250) == 2
+    assert aci.bars_per_layer_rule(150) == 2
+    assert aci.bars_per_layer_rule(400) == 4
+
+
+def test_second_layer_sits_on_first_layer_positions():
+    lay = aci.arrange_bars(5, 20, 300, 40, 9, 20, max_per_layer=3)
+    assert lay.layers == [3, 2]
+    first, second = lay.x
+    assert second == [first[0], first[-1]]               # corners
+    lay = aci.arrange_bars(7, 20, 400, 40, 9, 20, max_per_layer=4)
+    assert lay.layers == [4, 3] and not lay.symmetric    # odd count over even layer
+    lay = aci.arrange_bars(6, 20, 300, 40, 9, 20, max_per_layer=3)
+    assert lay.x[1] == lay.x[0] and lay.symmetric
+    lay = aci.arrange_bars(4, 16, 500, 40, 9, 20, max_per_layer=5)
+    assert lay.layers == [4]
+
+
+def test_auto_design_uses_b10_rule_and_symmetric_layers():
+    fd = aci.design_flexure(250e6, 300, 600, 24, 390, 40, 9, 20, 20, 16, max_per_layer=3)
+    assert max(fd.tension.layers) <= 3 and fd.tension.symmetric
+    assert all(set(xs) <= set(fd.tension.x[0]) for xs in fd.tension.x[1:])
+    assert all(fd.checks.values())
