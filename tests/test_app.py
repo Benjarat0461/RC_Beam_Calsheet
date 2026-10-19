@@ -9,6 +9,10 @@ def _run():
     return AppTest.from_file(APP, default_timeout=60).run()
 
 
+def _radio(at, label):
+    return next(r for r in at.sidebar.radio if r.label == label)
+
+
 def test_default_inputs_pass_in_mks_units():
     at = _run()
     assert not at.exception
@@ -21,9 +25,9 @@ def test_default_inputs_pass_in_mks_units():
 
 def test_uniform_load_and_manual_modes():
     at = _run()
-    at.sidebar.radio[0].set_value("น้ำหนักแผ่สม่ำเสมอ").run()
+    _radio(at, "วิธีป้อนแรง").set_value("น้ำหนักแผ่สม่ำเสมอ").run()
     assert not at.exception
-    at.sidebar.radio[1].set_value("กำหนดเอง (ตรวจสอบ)").run()
+    _radio(at, "การเลือกเหล็ก").set_value("กำหนดเอง (ตรวจสอบ)").run()
     assert not at.exception
     assert at.metric[2].value.startswith("RB9 @ 20.0 cm")
 
@@ -42,3 +46,15 @@ def test_av_min_display_units():
     line = next(l for l in md.splitlines() if "Av,min/s" in l)
     # 3.5 · 30 cm / 2400 ksc = 0.04375 cm²/cm
     assert "0.0437" in line or "0.0438" in line
+
+
+def test_load_combo_14d_17l():
+    at = _run()
+    _radio(at, "วิธีป้อนแรง").set_value("น้ำหนักแผ่สม่ำเสมอ").run()
+    _radio(at, "ตัวคูณน้ำหนัก").set_value("1.4D+1.7L").run()
+    assert not at.exception
+    # wD = 1500 + 2400·0.3·0.6 = 1932 kg/m, wL = 1000 → wu = 1.4·1932 + 1.7·1000 = 4,405
+    lines = [m.value for m in at.markdown]
+    assert any("wu = 1.4 × 1,932 + 1.7 × 1,000 = 4,405 kg/m" in v for v in lines)
+    # Mu = 4405 · 6² / 8 = 19,822 kg-m
+    assert any("Mu = wu·L²/8 = 19,822 kg-m" in v for v in lines)

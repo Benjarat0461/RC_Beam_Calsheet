@@ -360,8 +360,20 @@ def shear_design(Vu: float, bw: float, d: float, fc: float, fyt: float, As: floa
 # ---------------------------------------------------------------------------
 # Loads
 # ---------------------------------------------------------------------------
-def factored_line_load(wD: float, wL: float) -> tuple[float, str]:
-    """5.3.1 Eq. (5.3.1a) and (5.3.1b), governing combination."""
+LOAD_COMBOS = {
+    "ACI": "max(1.4D, 1.2D + 1.6L) — ACI 318-19 5.3.1",
+    "1.4D+1.7L": "1.4D + 1.7L — วสท. / ACI 318-99",
+}
+
+
+def factored_line_load(wD: float, wL: float, combo: str = "ACI") -> tuple[float, str]:
+    """Factored load and the governing combination.
+
+    "ACI": 5.3.1 Eq. (5.3.1a) and (5.3.1b).
+    "1.4D+1.7L": the older U = 1.4D + 1.7L (ACI 318-99 9.2.1, EIT practice).
+    """
+    if combo == "1.4D+1.7L":
+        return 1.4 * wD + 1.7 * wL, "1.4D + 1.7L"
     w1 = 1.4 * wD
     w2 = 1.2 * wD + 1.6 * wL
     return (w1, "1.4D") if w1 >= w2 else (w2, "1.2D + 1.6L")

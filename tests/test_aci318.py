@@ -87,3 +87,9 @@ def test_eit_coefficients_reproduce_kg_cm_equations():
 
 def test_default_coefficients_unchanged():
     assert aci.ACI_SI.vc == 0.17 and aci.ACI_SI.mks["vc"] == pytest.approx(0.543, abs=1e-3)
+
+
+def test_load_combinations():
+    assert aci.factored_line_load(1000, 500) == (pytest.approx(2000), "1.2D + 1.6L")
+    assert aci.factored_line_load(1000, 0) == (pytest.approx(1400), "1.4D")
+    assert aci.factored_line_load(1000, 500, "1.4D+1.7L") == (pytest.approx(2250), "1.4D + 1.7L")

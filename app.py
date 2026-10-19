@@ -99,7 +99,9 @@ with st.sidebar:
         wD_sdl = st.number_input("น้ำหนักบรรทุกคงที่เพิ่มเติม wD (kg/m)", 0.0, 1e6, 1500.0, 100.0)
         wL = st.number_input("น้ำหนักบรรทุกจร wL (kg/m)", 0.0, 1e6, 1000.0, 100.0)
         self_wt = st.checkbox("รวมน้ำหนักคานเอง (2,400 kg/m³)", True)
-        load_info = dict(system=system, wD_sdl=wD_sdl, wL=wL, self_wt=self_wt)
+        combo_key = st.radio("ตัวคูณน้ำหนัก", list(aci.LOAD_COMBOS),
+                             format_func=aci.LOAD_COMBOS.get)
+        load_info = dict(system=system, wD_sdl=wD_sdl, wL=wL, self_wt=self_wt, combo=combo_key)
 
     st.header("4) เหล็กเสริม")
     bars = list(aci.BAR_SIZES)
@@ -142,7 +144,7 @@ if load_info is None:
 else:
     w_sw = 2400.0 * b_cm / 100.0 * h_cm / 100.0 if load_info["self_wt"] else 0.0
     wD = load_info["wD_sdl"] + w_sw
-    wu, combo = aci.factored_line_load(wD, load_info["wL"])
+    wu, combo = aci.factored_line_load(wD, load_info["wL"], load_info["combo"])
     if load_info["system"] == "คานช่วงเดียวธรรมดา":
         Mu_kgm = wu * span ** 2 / 8.0
         Vu_kg = wu * max(span / 2.0 - d_est_m, 0.0)
@@ -154,7 +156,9 @@ else:
     load_lines = [
         f"น้ำหนักคานเอง = 2,400 × {b_cm / 100:.2f} × {h_cm / 100:.2f} = {w_sw:,.0f} kg/m",
         f"wD = {wD:,.0f} kg/m, wL = {load_info['wL']:,.0f} kg/m",
-        f"wu = max(1.4D, 1.2D + 1.6L) = {wu:,.0f} kg/m  [{combo}]  (ACI 5.3.1)",
+        (f"wu = max(1.4D, 1.2D + 1.6L) = {wu:,.0f} kg/m  [{combo}]  (ACI 5.3.1)"
+         if load_info["combo"] == "ACI" else
+         f"wu = 1.4 × {wD:,.0f} + 1.7 × {load_info['wL']:,.0f} = {wu:,.0f} kg/m  (1.4D + 1.7L)"),
         f"Mu = {m_txt} = {Mu_kgm:,.0f} kg-m",
         f"Vu (ที่ระยะ d จากหน้าที่รองรับ, 9.4.3.2) = {v_txt} = {Vu_kg:,.0f} kg",
     ]
