@@ -38,20 +38,6 @@ def nmm_to_kgm(x): return x / (G * 1000.0)
 def mm2_to_cm2(x): return x / 100.0
 
 
-# Coefficients of the SI equations rewritten for f'c, fy in ksc and lengths in cm
-K_SQRT = math.sqrt(KSC) / KSC     # c·√f'c[MPa] (MPa) -> (c·K_SQRT)·√f'c[ksc] (ksc), ≈ 3.19
-C_ASMIN1 = 0.25 * math.sqrt(KSC) / KSC        # ≈ 0.80
-C_ASMIN2 = 1.4 / KSC                          # ≈ 14.3
-C_VC = 0.17 * K_SQRT                          # ≈ 0.54
-C_VC_RHO = 0.66 * K_SQRT                      # ≈ 2.11
-C_VC_MAX = 0.42 * K_SQRT                      # ≈ 1.34
-C_VS_MAX = 0.66 * K_SQRT                      # ≈ 2.11
-C_AVMIN_TRIG = 0.083 * K_SQRT                 # ≈ 0.27
-C_AVMIN1 = 0.062 * K_SQRT                     # ≈ 0.20
-C_AVMIN2 = 0.35 / KSC                         # ≈ 3.6
-C_SMAX = 0.33 * K_SQRT                        # ≈ 1.05
-SQRT_FC_LIM = 8.3 / math.sqrt(KSC)            # √f'c ≤ 26.5 (ksc^0.5)
-
 STEEL_GRADES_KSC = {
     "SR24 (fy = 2,400 ksc)": 2400.0,
     "SD30 (fy = 3,000 ksc)": 3000.0,
@@ -85,6 +71,10 @@ with st.sidebar:
     g_stir = st.selectbox("เหล็กปลอก", grades, index=0)
     fyt_k = (st.number_input("fyt เหล็กปลอก (ksc)", 2000.0, 5600.0, 2400.0, 100.0)
              if g_stir == "กำหนดเอง" else STEEL_GRADES_KSC[g_stir])
+    coef_sets = {aci.EIT.name: aci.EIT, aci.ACI_SI.name: aci.ACI_SI}
+    k = coef_sets[st.selectbox("ค่าสัมประสิทธิ์ในสมการ", list(coef_sets),
+                               help="วสท.: ใช้ค่าปัดในหน่วย kg-cm เช่น Vc = 0.53√f'c·bw·d, "
+                                    "As,min = 14/fy·b·d")]
     lam = st.number_input("λ (คอนกรีตน้ำหนักปกติ = 1.0)", 0.75, 1.0, 1.0, 0.05)
     agg_cm = st.number_input("ขนาดมวลรวมโตสุด (cm)", 1.0, 4.0, 2.0, 0.5)
 
@@ -124,6 +114,14 @@ with st.sidebar:
         s_user_cm = st.number_input("ระยะเรียงเหล็กปลอก s (cm)", 5.0, 60.0, 20.0, 2.5)
     else:
         n_t_user = n_c_user = s_user_cm = None
+
+# Coefficients shown in the kg-cm form of each equation
+C = k.mks
+
+
+def cf(x: float) -> str:
+    return f"{x:.3g}"
+
 
 # --- convert inputs to SI for the calculation core ---
 fc, fy, fyt = ksc_to_mpa(fc_k), ksc_to_mpa(fy_k), ksc_to_mpa(fyt_k)
@@ -177,16 +175,16 @@ for e in errors:
 
 try:
     flex = aci.design_flexure(Mu, b, h, fc, fy, cover, d_s, d_agg, db_t, db_c,
-                              n_t=n_t_user, n_c=n_c_user)
+                              n_t=n_t_user, n_c=n_c_user, k=k)
 except ValueError as exc:
     st.error(f"ไม่สามารถออกแบบได้: {exc}")
     st.stop()
 
 res = flex.result
 d = flex.d
-shear = aci.shear_design(Vu, b, d, fc, fyt, flex.tension.area, d_s, int(legs), lam, s_user)
-h_min = aci.min_thickness(span * 1000.0, support, fy)
-s_crack = aci.crack_control_spacing(fy, cover + d_s)
+shear = aci.shear_design(Vu, b, d, fc, fyt, flex.tension.area, d_s, int(legs), lam, s_user, k=k)
+h_min = aci.min_thickness(span * 1000.0, support, fy, k)
+s_crack = aci.crack_control_spacing(fy, cover + d_s, k)
 n_bot = flex.tension.layers[0]
 s_bot_cc = (b - 2 * cover - 2 * d_s - db_t) / (n_bot - 1) if n_bot > 1 else 0.0
 
@@ -268,7 +266,7 @@ with tab_flex:
 | d' (ถึงศูนย์ถ่วงเหล็กบน) | {dc_cm:.2f} cm | |
 | As,req | {mm2_to_cm2(flex.As_req):.2f} cm² | 22.2 |
 | A's,req | {mm2_to_cm2(flex.Asc_req):.2f} cm² | {"ต้องใช้เหล็กรับแรงอัด" if flex.Asc_req > 0 else "เสริมเหล็กรับแรงดึงอย่างเดียว"} |
-| As,min = max({C_ASMIN1:.2f}√f'c, {C_ASMIN2:.1f})·b·d/fy | {mm2_to_cm2(flex.As_min):.2f} cm² | 9.6.1.2 |
+| As,min = max({cf(C['asmin1'])}√f'c, {cf(C['asmin2'])})·b·d/fy | {mm2_to_cm2(flex.As_min):.2f} cm² | 9.6.1.2 |
 | As,provided | {As_cm2:.2f} cm² | |
 | ρ = As/(b·d) | {flex.tension.area / (b * d):.4f} | |
 | c (strain compatibility) | {mm_to_cm(res.c):.2f} cm | 22.2.1 |
@@ -292,7 +290,7 @@ with tab_flex:
     fs_k = 2.0 / 3.0 * fy_k
     st.markdown(f"""
 **การควบคุมรอยร้าว (24.3.2)**: fs = ⅔fy = {fs_k:,.0f} ksc, cc = {cover_cm + d_s / 10:.1f} cm
-s,max = min[38(2,855/fs) − 2.5cc, 30(2,855/fs)] = **{mm_to_cm(s_crack):.1f} cm**;
+s,max = min[38({C['fs_ref']:,.0f}/fs) − 2.5cc, 30({C['fs_ref']:,.0f}/fs)] = **{mm_to_cm(s_crack):.1f} cm**;
 ระยะเหล็กล่างชั้นนอก (ศูนย์กลางถึงศูนย์กลาง) = {mm_to_cm(s_bot_cc):.1f} cm → {ok(s_bot_cc <= s_crack)}
 
 **ระยะช่องว่างระหว่างเหล็ก (25.2.1)**: ต้องการ ≥ max(2.5 cm, db, 4/3·dagg)
@@ -301,30 +299,33 @@ s,max = min[38(2,855/fs) − 2.5cc, 30(2,855/fs)] = **{mm_to_cm(s_crack):.1f} cm
 """)
 
 with tab_shear:
-    sqrt_fc_k = min(math.sqrt(fc_k), SQRT_FC_LIM)
+    sqrt_fc_k = min(math.sqrt(fc_k), C['sqrt_fc_max'])
     st.markdown(f"""
 | รายการ | ค่า | อ้างอิง |
 |---|---|---|
 | Vu | {Vu_kg:,.0f} kg | |
-| √f'c (≤ {SQRT_FC_LIM:.1f}) | {sqrt_fc_k:.2f} √ksc | 22.5.3.1 |
-| fyt ใช้คำนวณ (≤ 4,280 ksc) | {min(fyt_k, mpa_to_ksc(420)):,.0f} ksc | 20.2.2.4 |
+| √f'c (≤ {cf(C['sqrt_fc_max'])}) | {sqrt_fc_k:.2f} √ksc | 22.5.3.1 |
+| fyt ใช้คำนวณ (≤ {C['fyt_max']:,.0f} ksc) | {min(fyt_k, C['fyt_max']):,.0f} ksc | 20.2.2.4 |
 | ρw = As/(bw·d) | {flex.tension.area / (b * d):.4f} | |
 | λs = √(2/(1+0.04d)) ≤ 1 (d เป็น cm) | {shear.lambda_s:.3f} | 22.5.5.1.3 |
-| Vc = max({C_VC:.2f}λ√f'c, {C_VC_RHO:.2f}λρw^⅓√f'c)·bw·d ≤ {C_VC_MAX:.2f}λ√f'c·bw·d | {Vc_kg:,.0f} kg | Table 22.5.5.1 |
+| Vc = max({cf(C['vc'])}λ√f'c, {cf(C['vc_rho'])}λρw^⅓√f'c)·bw·d ≤ {cf(C['vc_max'])}λ√f'c·bw·d | {Vc_kg:,.0f} kg | Table 22.5.5.1 |
 | φVc | {0.75 * Vc_kg:,.0f} kg | φ = 0.75 |
-| ต้องใช้ Av,min หรือไม่ (Vu > φ{C_AVMIN_TRIG:.2f}λ√f'c·bw·d) | {"ใช่" if shear.av_min_required else "ไม่ (แต่แนะนำให้ใส่)"} | 9.6.3.1 |
-| Av,min/s = max({C_AVMIN1:.2f}√f'c, {C_AVMIN2:.1f})·bw/fyt | {shear.Av_min_s * 10:.4f} cm²/cm | 9.6.3.4 |
+| ต้องใช้ Av,min หรือไม่ (Vu > φ{cf(C['av_trig'])}λ√f'c·bw·d) | {"ใช่" if shear.av_min_required else "ไม่ (แต่แนะนำให้ใส่)"} | 9.6.3.1 |
+| Av,min/s = max({cf(C['avmin1'])}√f'c, {cf(C['avmin2'])})·bw/fyt | {shear.Av_min_s / 10:.4f} cm²/cm | 9.6.3.4 |
 | Vs,req = Vu/φ − Vc | {Vs_req_kg:,.0f} kg | 22.5.8.5.3 |
 | Av ({legs} ขา {ds_name}) | {mm2_to_cm2(shear.Av):.2f} cm² | |
-| s,max (d/2 ≤ 60 cm หรือ d/4 ≤ 30 cm ถ้า Vs > {C_SMAX:.2f}√f'c·bw·d) | {mm_to_cm(shear.s_max):.1f} cm | 9.7.6.2.2 |
+| s,max (d/2 ≤ 60 cm หรือ d/4 ≤ 30 cm ถ้า Vs > {cf(C['smax_vs'])}√f'c·bw·d) | {mm_to_cm(shear.s_max):.1f} cm | 9.7.6.2.2 |
 | s,required | {mm_to_cm(shear.s_req):.1f} cm | |
 | **s,provided** | **{s_prov_cm:.1f} cm** | |
 | Vs = Av·fyt·d/s | {Vs_kg:,.0f} kg | 22.5.8.5.3 |
 | **φVn = φ(Vc + Vs)** | **{phi_Vn_kg:,.0f} kg** | {ok(shear.phi_Vn >= Vu)} |
-| φ(Vc + {C_VS_MAX:.2f}√f'c·bw·d) | {phi_Vn_max_kg:,.0f} kg | 22.5.1.2 {ok(Vu <= shear.phi_Vn_max)} |
+| φ(Vc + {cf(C['vs_max'])}√f'c·bw·d) | {phi_Vn_max_kg:,.0f} kg | 22.5.1.2 {ok(Vu <= shear.phi_Vn_max)} |
 """)
     for n in shear.notes:
-        st.info(n.replace("420 MPa", "420 MPa ≈ 4,280 ksc"))
+        if n.startswith("fyt limited"):
+            n = f"fyt จำกัดไม่เกิน {C['fyt_max']:,.0f} ksc (Table 20.2.2.4a)"
+        n = n.replace("smax_vs·√fc'", f"{cf(C['smax_vs'])}√f'c")
+        st.info(n)
 
 with tab_sec:
     # drawing in cm
@@ -370,7 +371,8 @@ with tab_sec:
 
 with tab_sheet:
     sheet = f"""# รายการคำนวณออกแบบคาน {beam_id}
-โครงการ: {project}  วันที่: {date.today():%d/%m/%Y}  มาตรฐาน: ACI 318-19  หน่วย: cm, kg
+โครงการ: {project}  วันที่: {date.today():%d/%m/%Y}  มาตรฐาน: ACI 318-19  หน่วย: cm, kg  
+ค่าสัมประสิทธิ์: {k.name}
 
 ## 1. ข้อมูล
 - f'c = {fc_k:,.0f} ksc, fy = {fy_k:,.0f} ksc, fyt = {fyt_k:,.0f} ksc, Es = 2.04×10⁶ ksc, λ = {lam}
@@ -387,7 +389,7 @@ with tab_sheet:
 - φMn = {res.phi:.3f} × {Mn_kgm:,.0f} = {phi_Mn_kgm:,.0f} kg-m {"≥" if res.phi_Mn >= Mu else "<"} Mu = {Mu_kgm:,.0f} kg-m → {ok(res.phi_Mn >= Mu)}
 
 ## 4. ออกแบบรับแรงเฉือน
-- Vc = {Vc_kg:,.0f} kg, φVc = {0.75 * Vc_kg:,.0f} kg
+- Vc = max({cf(C['vc'])}λ√f'c, {cf(C['vc_rho'])}λρw^⅓√f'c)·bw·d = {Vc_kg:,.0f} kg, φVc = {0.75 * Vc_kg:,.0f} kg
 - Vs,req = {Vs_req_kg:,.0f} kg, s,max = {mm_to_cm(shear.s_max):.1f} cm
 - ใช้เหล็กปลอก {stir_txt}: Vs = {Vs_kg:,.0f} kg
 - φVn = {phi_Vn_kg:,.0f} kg {"≥" if shear.phi_Vn >= Vu else "<"} Vu = {Vu_kg:,.0f} kg → {ok(shear.phi_Vn >= Vu)}
@@ -401,4 +403,4 @@ with tab_sheet:
 
 st.caption("หมายเหตุ: โปรแกรมนี้ใช้เพื่อช่วยคำนวณเบื้องต้น ผู้ออกแบบต้องตรวจสอบผลการคำนวณและรับผิดชอบงานออกแบบด้วยตนเอง "
            "(ไม่รวมการออกแบบรับแรงบิด ระยะฝังยึด/ต่อทาบ และการคำนวณการแอ่นตัว) · "
-           "สมการ ACI 318-19 (SI) แปลงเป็นหน่วย kg-cm ด้วย 1 kg = 9.80665 N")
+           f"ค่าสัมประสิทธิ์: {k.name} · 1 kg = 9.80665 N")

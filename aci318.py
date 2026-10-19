@@ -6,7 +6,7 @@ All clause references are to ACI 318-19.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 ES = 200_000.0          # 20.2.2.2 modulus of elasticity of reinforcement, MPa
 EPS_CU = 0.003          # 22.2.2.1 maximum usable concrete strain
@@ -26,6 +26,64 @@ STEEL_GRADES = {
     "SD50 (fy = 490 MPa)": 490.0,
     "ASTM A615 Gr.60 (fy = 420 MPa)": 420.0,
 }
+
+
+@dataclass(frozen=True)
+class Coefficients:
+    """Code coefficients, expressed for SI calculation (MPa, mm).
+
+    Square-root terms are the c in c·√f'c[MPa]; stress terms are in MPa.
+    `mks` holds the same coefficients as displayed for f'c, fy in ksc.
+    """
+    name: str
+    vc: float = 0.17             # Table 22.5.5.1(a)
+    vc_rho: float = 0.66         # Table 22.5.5.1(b), (c)
+    vc_max: float = 0.42         # 22.5.5.1.1
+    vs_max: float = 0.66         # 22.5.1.2
+    av_trig: float = 0.083       # 9.6.3.1
+    avmin1: float = 0.062        # 9.6.3.4(a)
+    avmin2: float = 0.35         # 9.6.3.4(b), MPa
+    smax_vs: float = 0.33        # 9.7.6.2.2
+    sqrt_fc_max: float = 8.3     # 22.5.3.1, √MPa
+    fyt_max: float = 420.0       # Table 20.2.2.4a, MPa
+    asmin1: float = 0.25         # 9.6.1.2(a)
+    asmin2: float = 1.4          # 9.6.1.2(b), MPa
+    fs_ref: float = 280.0        # 24.3.2, MPa
+    hmin_fy: float = 700.0       # Table 9.3.1.1.1, MPa
+    mks: dict = field(default_factory=dict, compare=False)
+
+
+def _mks_display(c: "Coefficients") -> dict:
+    k = math.sqrt(KSC_TO_MPA)                 # c_mks = c_si / k for √f'c terms
+    out = {f: getattr(c, f) / k for f in
+           ("vc", "vc_rho", "vc_max", "vs_max", "av_trig", "avmin1", "smax_vs", "asmin1",
+            "sqrt_fc_max")}
+    out.update({f: getattr(c, f) / KSC_TO_MPA for f in ("avmin2", "fyt_max", "asmin2",
+                                                         "fs_ref", "hmin_fy")})
+    return out
+
+
+def _from_mks(name: str, **mks: float) -> Coefficients:
+    """Build SI coefficients that reproduce the given (rounded) MKS equations exactly."""
+    k = math.sqrt(KSC_TO_MPA)
+    si = {f: v * k for f, v in mks.items()
+          if f in ("vc", "vc_rho", "vc_max", "vs_max", "av_trig", "avmin1", "smax_vs",
+                   "asmin1", "sqrt_fc_max")}
+    si.update({f: v * KSC_TO_MPA for f, v in mks.items()
+               if f in ("avmin2", "fyt_max", "asmin2", "fs_ref", "hmin_fy")})
+    return Coefficients(name=name, mks=dict(mks), **si)
+
+
+_aci = Coefficients(name="ACI 318-19 (แปลงหน่วยตรงจาก SI)")
+ACI_SI = replace(_aci, mks=_mks_display(_aci))
+
+# Rounded kg-cm coefficients as used by the Engineering Institute of Thailand (วสท.)
+EIT = _from_mks(
+    "วสท. (ค่าปัดหน่วย kg-cm)",
+    vc=0.53, vc_rho=2.1, vc_max=1.33, vs_max=2.1, av_trig=0.27, avmin1=0.2,
+    avmin2=3.5, smax_vs=1.1, sqrt_fc_max=26.5, fyt_max=4200.0, asmin1=0.8,
+    asmin2=14.0, fs_ref=2800.0, hmin_fy=7000.0,
+)
 
 
 def bar_area(db: float) -> float:
@@ -63,12 +121,13 @@ def section_class(eps_t: float, fy: float) -> str:
     return "Transition"
 
 
-def as_min_flexure(fc: float, fy: float, bw: float, d: float) -> float:
+def as_min_flexure(fc: float, fy: float, bw: float, d: float,
+                   k: Coefficients = ACI_SI) -> float:
     """9.6.1.2."""
-    return max(0.25 * math.sqrt(fc) / fy, 1.4 / fy) * bw * d
+    return max(k.asmin1 * math.sqrt(fc) / fy, k.asmin2 / fy) * bw * d
 
 
-def min_thickness(span: float, support: str, fy: float) -> float:
+def min_thickness(span: float, support: str, fy: float, k: Coefficients = ACI_SI) -> float:
     """Table 9.3.1.1 (normalweight concrete), with 9.3.1.1.1 modification for fy != 420."""
     divisor = {
         "Simply supported": 16.0,
@@ -76,7 +135,7 @@ def min_thickness(span: float, support: str, fy: float) -> float:
         "Both ends continuous": 21.0,
         "Cantilever": 8.0,
     }[support]
-    return span / divisor * (0.4 + fy / 700.0)
+    return span / divisor * (0.4 + fy / k.hmin_fy)
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +276,10 @@ def required_steel(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: 
     return As1 + As2, As_c
 
 
-def crack_control_spacing(fy: float, cc: float) -> float:
+def crack_control_spacing(fy: float, cc: float, k: Coefficients = ACI_SI) -> float:
     """24.3.2: s <= 380(280/fs) - 2.5cc <= 300(280/fs), fs = 2/3 fy."""
     fs = 2.0 / 3.0 * fy
-    return min(380.0 * 280.0 / fs - 2.5 * cc, 300.0 * 280.0 / fs)
+    return min(380.0 * k.fs_ref / fs - 2.5 * cc, 300.0 * k.fs_ref / fs)
 
 
 # ---------------------------------------------------------------------------
@@ -245,29 +304,29 @@ class ShearResult:
 
 def shear_design(Vu: float, bw: float, d: float, fc: float, fyt: float, As: float,
                  d_stirrup: float, legs: int, lam: float = 1.0,
-                 s_user: float | None = None) -> ShearResult:
+                 s_user: float | None = None, k: Coefficients = ACI_SI) -> ShearResult:
     notes = []
-    sqrt_fc = min(math.sqrt(fc), 8.3)                     # 22.5.3.1
-    fyt_eff = min(fyt, 420.0)                              # 20.2.2.4
-    if fyt > 420.0:
-        notes.append("fyt limited to 420 MPa (Table 20.2.2.4a)")
+    sqrt_fc = min(math.sqrt(fc), k.sqrt_fc_max)            # 22.5.3.1
+    fyt_eff = min(fyt, k.fyt_max)                          # 20.2.2.4
+    if fyt > k.fyt_max:
+        notes.append(f"fyt limited to {k.fyt_max:.0f} MPa (Table 20.2.2.4a)")
     Av = legs * bar_area(d_stirrup)
-    Av_min_s = max(0.062 * sqrt_fc, 0.35) * bw / fyt_eff  # 9.6.3.4
+    Av_min_s = max(k.avmin1 * sqrt_fc, k.avmin2) * bw / fyt_eff  # 9.6.3.4
     rho_w = As / (bw * d)
     lam_s = min(1.0, math.sqrt(2.0 / (1.0 + 0.004 * d)))  # 22.5.5.1.3
 
-    Vc_max = 0.42 * lam * sqrt_fc * bw * d                  # 22.5.5.1.1
+    Vc_max = k.vc_max * lam * sqrt_fc * bw * d                  # 22.5.5.1.1
     # Table 22.5.5.1 (Nu = 0)
-    Vc_a = 0.17 * lam * sqrt_fc * bw * d
-    Vc_b = 0.66 * lam * rho_w ** (1.0 / 3.0) * sqrt_fc * bw * d
-    Vc_c = 0.66 * lam_s * lam * rho_w ** (1.0 / 3.0) * sqrt_fc * bw * d
+    Vc_a = k.vc * lam * sqrt_fc * bw * d
+    Vc_b = k.vc_rho * lam * rho_w ** (1.0 / 3.0) * sqrt_fc * bw * d
+    Vc_c = k.vc_rho * lam_s * lam * rho_w ** (1.0 / 3.0) * sqrt_fc * bw * d
     Vc_with_min = min(max(Vc_a, Vc_b), Vc_max)
     Vc_without = min(Vc_c, Vc_max)
 
     # 9.6.3.1: Av,min required where Vu > phi 0.083 lambda sqrt(fc') bw d
-    av_min_required = Vu > PHI_SHEAR * 0.083 * lam * sqrt_fc * bw * d
+    av_min_required = Vu > PHI_SHEAR * k.av_trig * lam * sqrt_fc * bw * d
 
-    Vs_lim_sec = 0.66 * sqrt_fc * bw * d                    # 22.5.1.2
+    Vs_lim_sec = k.vs_max * sqrt_fc * bw * d                    # 22.5.1.2
     Vc = Vc_with_min   # stirrups at least Av,min are always provided in this design
     phi_Vn_max = PHI_SHEAR * (Vc + Vs_lim_sec)
 
@@ -275,11 +334,11 @@ def shear_design(Vu: float, bw: float, d: float, fc: float, fyt: float, As: floa
     s_strength = Av * fyt_eff * d / Vs_req if Vs_req > 0 else math.inf
     s_avmin = Av / Av_min_s
     # 9.7.6.2.2 maximum spacing
-    if Vs_req <= 0.33 * sqrt_fc * bw * d:
+    if Vs_req <= k.smax_vs * sqrt_fc * bw * d:
         s_max = min(d / 2.0, 600.0)
     else:
         s_max = min(d / 4.0, 300.0)
-        notes.append("Vs > 0.33√fc'·bw·d → s,max halved (9.7.6.2.2)")
+        notes.append("Vs > smax_vs·√fc'·bw·d → s,max halved (9.7.6.2.2)")
     s_req = min(s_strength, s_avmin, s_max)
     if s_user is not None and s_user > 0:
         s_prov = s_user
@@ -326,7 +385,7 @@ class FlexureDesign:
 
 
 def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db_c,
-                   As_req, Asc_req) -> FlexureDesign:
+                   As_req, Asc_req, k: Coefficients = ACI_SI) -> FlexureDesign:
     tens = arrange_bars(n_t, db_t, b, cover, d_stirrup, d_agg)
     comp = arrange_bars(n_c, db_c, b, cover, d_stirrup, d_agg)
     d = h - tens.centroid
@@ -334,7 +393,7 @@ def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db
     steel = [(k * bar_area(db_c), y) for k, y in zip(comp.layers, comp.depths)]
     steel += [(k * bar_area(db_t), h - y) for k, y in zip(tens.layers, tens.depths)]
     res = analyze_flexure(b, h, fc, fy, steel, dt)
-    As_min = as_min_flexure(fc, fy, b, d)
+    As_min = as_min_flexure(fc, fy, b, d, k)
     checks = {
         "strength": res.phi_Mn >= Mu,
         # 9.6.1.3: As,min need not be satisfied if As,prov >= 4/3 As,req
@@ -354,7 +413,7 @@ def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db
 def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: float,
                    d_stirrup: float, d_agg: float, db_t: float, db_c: float,
                    n_hanger: int = 2, n_t: int | None = None,
-                   n_c: int | None = None) -> FlexureDesign:
+                   n_c: int | None = None, k: Coefficients = ACI_SI) -> FlexureDesign:
     """Select (or check, if n_t/n_c given) longitudinal bars for factored moment Mu (N-mm)."""
     d0 = h - cover - d_stirrup - db_t / 2.0
     dc0 = cover + d_stirrup + db_c / 2.0
@@ -362,16 +421,16 @@ def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: f
     manual = n_t is not None and n_c is not None
     if manual:
         return _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t,
-                              n_c, db_c, As_req, Asc_req)
+                              n_c, db_c, As_req, Asc_req, k)
 
-    As_min0 = as_min_flexure(fc, fy, b, d0)
+    As_min0 = as_min_flexure(fc, fy, b, d0, k)
     As_target = max(As_req, min(As_min0, 4.0 / 3.0 * As_req))
     nt = max(2, math.ceil(As_target / bar_area(db_t)))
     nc = max(n_hanger, math.ceil(Asc_req / bar_area(db_c)) if Asc_req > 0 else 0, 2)
     best = None
     for _ in range(100):
         best = _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, nt, db_t,
-                              nc, db_c, As_req, Asc_req)
+                              nc, db_c, As_req, Asc_req, k)
         ck = best.checks
         if ck["strength"] and ck["as_min"] and ck["eps_t"]:
             break

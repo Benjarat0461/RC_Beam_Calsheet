@@ -14,6 +14,9 @@ def test_default_inputs_pass_in_mks_units():
     assert not at.exception
     assert len(at.success) == 1 and "30×60 cm" in at.success[0].value
     assert "cm" in at.metric[2].value
+    assert at.sidebar.selectbox[2].value.startswith("วสท.")
+    shear_md = next(m.value for m in at.markdown if "Table 22.5.5.1" in m.value)
+    assert "0.53λ√f'c" in shear_md and "2.1λρw" in shear_md
 
 
 def test_uniform_load_and_manual_modes():
@@ -31,3 +34,11 @@ def test_undersized_beam_reports_ng():
     mu.set_value(200000.0).run()
     assert not at.exception
     assert len(at.error) >= 1
+
+
+def test_av_min_display_units():
+    at = _run()
+    md = next(m.value for m in at.markdown if "9.6.3.4" in m.value)
+    line = next(l for l in md.splitlines() if "Av,min/s" in l)
+    # 3.5 · 30 cm / 2400 ksc = 0.04375 cm²/cm
+    assert "0.0437" in line or "0.0438" in line

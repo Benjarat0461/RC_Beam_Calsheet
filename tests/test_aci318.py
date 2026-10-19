@@ -69,3 +69,21 @@ def test_crack_spacing():
 
 def test_min_thickness():
     assert aci.min_thickness(6000, "Simply supported", 420) == pytest.approx(375)
+
+
+def test_eit_coefficients_reproduce_kg_cm_equations():
+    # b = 30 cm, d = 54 cm, f'c = 240 ksc, fy = 4000 ksc, As = 15 cm^2, Vu = 10 t
+    K, G = aci.KSC_TO_MPA, 9.80665
+    fc, fy = 240 * K, 4000 * K
+    sh = aci.shear_design(10000 * G, 300, 540, fc, 2400 * K, 1500, 9, 2, k=aci.EIT)
+    vc_a = 0.53 * math.sqrt(240) * 30 * 54
+    vc_b = 2.1 * (15 / (30 * 54)) ** (1 / 3) * math.sqrt(240) * 30 * 54
+    assert sh.Vc / G == pytest.approx(max(vc_a, vc_b), rel=1e-9)
+    as_min = aci.as_min_flexure(fc, fy, 300, 540, aci.EIT) / 100
+    assert as_min == pytest.approx(max(0.8 * math.sqrt(240), 14) / 4000 * 30 * 54, rel=1e-9)
+    assert aci.min_thickness(6000, "Simply supported", fy, aci.EIT) == pytest.approx(
+        6000 / 16 * (0.4 + 4000 / 7000))
+
+
+def test_default_coefficients_unchanged():
+    assert aci.ACI_SI.vc == 0.17 and aci.ACI_SI.mks["vc"] == pytest.approx(0.543, abs=1e-3)
