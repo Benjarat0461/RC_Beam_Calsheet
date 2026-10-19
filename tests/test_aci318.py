@@ -93,3 +93,15 @@ def test_load_combinations():
     assert aci.factored_line_load(1000, 500) == (pytest.approx(2000), "1.2D + 1.6L")
     assert aci.factored_line_load(1000, 0) == (pytest.approx(1400), "1.4D")
     assert aci.factored_line_load(1000, 500, "1.4D+1.7L") == (pytest.approx(2250), "1.4D + 1.7L")
+
+
+def test_phi_legacy_set():
+    fy = 420
+    p = aci.PHI_LEGACY
+    assert aci.phi_flexure(0.006, fy, p) == 0.90
+    assert aci.phi_flexure(0.002, fy, p) == 0.70
+    assert aci.phi_flexure(0.0021 + 0.0015, fy, p) == pytest.approx(0.80)
+    a = aci.shear_design(150e3, 300, 540, 25, 420, 1500, 10, 2, s_user=200)
+    b = aci.shear_design(150e3, 300, 540, 25, 420, 1500, 10, 2, s_user=200, p=p)
+    assert b.phi_Vn / a.phi_Vn == pytest.approx(0.85 / 0.75)
+    assert aci.COMBO_PHI["1.4D+1.7L"] is p and aci.COMBO_PHI["ACI"] is aci.PHI_ACI

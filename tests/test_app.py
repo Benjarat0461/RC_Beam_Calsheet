@@ -58,3 +58,14 @@ def test_load_combo_14d_17l():
     assert any("wu = 1.4 × 1,932 + 1.7 × 1,000 = 4,405 kg/m" in v for v in lines)
     # Mu = 4405 · 6² / 8 = 19,822 kg-m
     assert any("Mu = wu·L²/8 = 19,822 kg-m" in v for v in lines)
+
+
+def test_phi_follows_load_combo():
+    at = _run()
+    assert any("φ = 0.75" in m.value for m in at.markdown)
+    _radio(at, "ตัวคูณน้ำหนัก").set_value("1.4D+1.7L").run()   # also in direct-input mode
+    assert not at.exception
+    phi_v = next(m for m in at.metric if m.label == "φ เฉือน")
+    assert phi_v.value == "0.85"
+    assert any("φ = 0.85" in m.value for m in at.markdown)
+    assert any("0.70 ≤ φ ≤ 0.90" in m.value for m in at.markdown)

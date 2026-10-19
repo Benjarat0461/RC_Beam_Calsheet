@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 
 ES = 200_000.0          # 20.2.2.2 modulus of elasticity of reinforcement, MPa
 EPS_CU = 0.003          # 22.2.2.1 maximum usable concrete strain
-PHI_SHEAR = 0.75        # Table 21.2.1(b)
 KSC_TO_MPA = 0.0980665
 
 # Nominal bar diameters (mm) common in Thailand (TIS 20 / TIS 24)
@@ -86,6 +85,22 @@ EIT = _from_mks(
 )
 
 
+@dataclass(frozen=True)
+class PhiFactors:
+    """Strength reduction factors that go with a load-factor set."""
+    name: str
+    tension: float = 0.90        # tension-controlled
+    compression: float = 0.65    # compression-controlled, other (non-spiral) ties
+    shear: float = 0.75
+
+
+# ACI 318-19 Table 21.2.1 / 21.2.2, used with U = 1.2D + 1.6L
+PHI_ACI = PhiFactors("ACI 318-19 Table 21.2.1, 21.2.2")
+# ACI 318-08 Appendix C (C.9.3), the φ set that goes with U = 1.4D + 1.7L (EIT practice)
+PHI_LEGACY = PhiFactors("ACI 318-08 Appendix C / วสท.", tension=0.90, compression=0.70,
+                        shear=0.85)
+
+
 def bar_area(db: float) -> float:
     return math.pi * db ** 2 / 4.0
 
@@ -102,14 +117,14 @@ def beta1(fc: float) -> float:
     return 0.85 - 0.05 * (fc - 28.0) / 7.0
 
 
-def phi_flexure(eps_t: float, fy: float) -> float:
+def phi_flexure(eps_t: float, fy: float, p: PhiFactors = PHI_ACI) -> float:
     """Table 21.2.2 for deformed reinforcement, other (non-spiral) transverse reinforcement."""
     eps_ty = fy / ES
     if eps_t >= eps_ty + 0.003:
-        return 0.90
+        return p.tension
     if eps_t <= eps_ty:
-        return 0.65
-    return 0.65 + 0.25 * (eps_t - eps_ty) / 0.003
+        return p.compression
+    return p.compression + (p.tension - p.compression) * (eps_t - eps_ty) / 0.003
 
 
 def section_class(eps_t: float, fy: float) -> str:
@@ -205,7 +220,8 @@ class FlexureResult:
 
 
 def analyze_flexure(b: float, h: float, fc: float, fy: float,
-                    steel: list[tuple[float, float]], dt: float) -> FlexureResult:
+                    steel: list[tuple[float, float]], dt: float,
+                    p: PhiFactors = PHI_ACI) -> FlexureResult:
     """Nominal moment of a rectangular section.
 
     steel: list of (area mm^2, depth from compression face mm), every layer.
@@ -242,19 +258,20 @@ def analyze_flexure(b: float, h: float, fc: float, fy: float,
     # moment about the top fibre; with sum(F) = 0 this equals the internal couple
     Mn = -sum(f * y for _, f, y in items)
     eps_t = EPS_CU * (dt - c) / c
-    phi = phi_flexure(eps_t, fy)
+    phi = phi_flexure(eps_t, fy, p)
     return FlexureResult(c=c, a=a, eps_t=eps_t, phi=phi, Mn=Mn, phi_Mn=phi * Mn,
                          classification=section_class(eps_t, fy), steel=layers)
 
 
-def required_steel(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: float):
+def required_steel(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: float,
+                   p: PhiFactors = PHI_ACI):
     """Closed-form required reinforcement (rectangular stress block).
 
     Returns (As_req, As'_req). Singly reinforced if the section can stay
     tension-controlled (eps_t >= eps_ty + 0.003); otherwise compression steel
     is added keeping c at the tension-controlled limit.
     """
-    phi = 0.90
+    phi = p.tension
     b1 = beta1(fc)
     eps_ty = fy / ES
     c_tc = EPS_CU / (EPS_CU + eps_ty + 0.003) * d
@@ -304,7 +321,8 @@ class ShearResult:
 
 def shear_design(Vu: float, bw: float, d: float, fc: float, fyt: float, As: float,
                  d_stirrup: float, legs: int, lam: float = 1.0,
-                 s_user: float | None = None, k: Coefficients = ACI_SI) -> ShearResult:
+                 s_user: float | None = None, k: Coefficients = ACI_SI,
+                 p: PhiFactors = PHI_ACI) -> ShearResult:
     notes = []
     sqrt_fc = min(math.sqrt(fc), k.sqrt_fc_max)            # 22.5.3.1
     fyt_eff = min(fyt, k.fyt_max)                          # 20.2.2.4
@@ -324,13 +342,13 @@ def shear_design(Vu: float, bw: float, d: float, fc: float, fyt: float, As: floa
     Vc_without = min(Vc_c, Vc_max)
 
     # 9.6.3.1: Av,min required where Vu > phi 0.083 lambda sqrt(fc') bw d
-    av_min_required = Vu > PHI_SHEAR * k.av_trig * lam * sqrt_fc * bw * d
+    av_min_required = Vu > p.shear * k.av_trig * lam * sqrt_fc * bw * d
 
     Vs_lim_sec = k.vs_max * sqrt_fc * bw * d                    # 22.5.1.2
     Vc = Vc_with_min   # stirrups at least Av,min are always provided in this design
-    phi_Vn_max = PHI_SHEAR * (Vc + Vs_lim_sec)
+    phi_Vn_max = p.shear * (Vc + Vs_lim_sec)
 
-    Vs_req = max(0.0, Vu / PHI_SHEAR - Vc)
+    Vs_req = max(0.0, Vu / p.shear - Vc)
     s_strength = Av * fyt_eff * d / Vs_req if Vs_req > 0 else math.inf
     s_avmin = Av / Av_min_s
     # 9.7.6.2.2 maximum spacing
@@ -350,7 +368,7 @@ def shear_design(Vu: float, bw: float, d: float, fc: float, fyt: float, As: floa
         notes.append("Provided Av < Av,min → Vc per Table 22.5.5.1(c) with size effect λs")
     Vs = Av * fyt_eff * d / s_prov
     Vs = min(Vs, Vs_lim_sec)
-    phi_Vn = PHI_SHEAR * (Vc + Vs)
+    phi_Vn = p.shear * (Vc + Vs)
     return ShearResult(Vc=Vc, Vs_req=Vs_req, Av=Av, Av_min_s=Av_min_s, s_req=s_req,
                        s_max=s_max, s_provided=s_prov, Vs=Vs, phi_Vn=phi_Vn,
                        phi_Vn_max=phi_Vn_max, av_min_required=av_min_required,
@@ -364,6 +382,7 @@ LOAD_COMBOS = {
     "ACI": "max(1.4D, 1.2D + 1.6L) — ACI 318-19 5.3.1",
     "1.4D+1.7L": "1.4D + 1.7L — วสท. / ACI 318-99",
 }
+COMBO_PHI = {"ACI": PHI_ACI, "1.4D+1.7L": PHI_LEGACY}
 
 
 def factored_line_load(wD: float, wL: float, combo: str = "ACI") -> tuple[float, str]:
@@ -397,14 +416,15 @@ class FlexureDesign:
 
 
 def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db_c,
-                   As_req, Asc_req, k: Coefficients = ACI_SI) -> FlexureDesign:
+                   As_req, Asc_req, k: Coefficients = ACI_SI,
+                   p: PhiFactors = PHI_ACI) -> FlexureDesign:
     tens = arrange_bars(n_t, db_t, b, cover, d_stirrup, d_agg)
     comp = arrange_bars(n_c, db_c, b, cover, d_stirrup, d_agg)
     d = h - tens.centroid
     dt = h - tens.depths[0]
     steel = [(k * bar_area(db_c), y) for k, y in zip(comp.layers, comp.depths)]
     steel += [(k * bar_area(db_t), h - y) for k, y in zip(tens.layers, tens.depths)]
-    res = analyze_flexure(b, h, fc, fy, steel, dt)
+    res = analyze_flexure(b, h, fc, fy, steel, dt, p)
     As_min = as_min_flexure(fc, fy, b, d, k)
     checks = {
         "strength": res.phi_Mn >= Mu,
@@ -425,15 +445,16 @@ def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db
 def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: float,
                    d_stirrup: float, d_agg: float, db_t: float, db_c: float,
                    n_hanger: int = 2, n_t: int | None = None,
-                   n_c: int | None = None, k: Coefficients = ACI_SI) -> FlexureDesign:
+                   n_c: int | None = None, k: Coefficients = ACI_SI,
+                   p: PhiFactors = PHI_ACI) -> FlexureDesign:
     """Select (or check, if n_t/n_c given) longitudinal bars for factored moment Mu (N-mm)."""
     d0 = h - cover - d_stirrup - db_t / 2.0
     dc0 = cover + d_stirrup + db_c / 2.0
-    As_req, Asc_req = required_steel(Mu, b, d0, dc0, fc, fy)
+    As_req, Asc_req = required_steel(Mu, b, d0, dc0, fc, fy, p)
     manual = n_t is not None and n_c is not None
     if manual:
         return _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t,
-                              n_c, db_c, As_req, Asc_req, k)
+                              n_c, db_c, As_req, Asc_req, k, p)
 
     As_min0 = as_min_flexure(fc, fy, b, d0, k)
     As_target = max(As_req, min(As_min0, 4.0 / 3.0 * As_req))
@@ -442,7 +463,7 @@ def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: f
     best = None
     for _ in range(100):
         best = _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, nt, db_t,
-                              nc, db_c, As_req, Asc_req, k)
+                              nc, db_c, As_req, Asc_req, k, p)
         ck = best.checks
         if ck["strength"] and ck["as_min"] and ck["eps_t"]:
             break

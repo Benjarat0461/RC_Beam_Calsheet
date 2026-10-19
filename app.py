@@ -89,19 +89,23 @@ with st.sidebar:
                             "Cantilever"])
 
     st.header("3) แรงกระทำ")
+    combo_key = st.radio("ตัวคูณน้ำหนัก", list(aci.LOAD_COMBOS),
+                         format_func=aci.LOAD_COMBOS.get)
+    phi_set = aci.COMBO_PHI[combo_key]
+    st.caption(f"φ ดัด = {phi_set.tension:.2f} (tension-controlled) ถึง {phi_set.compression:.2f} "
+               f"(compression-controlled) · φ เฉือน = {phi_set.shear:.2f}  [{phi_set.name}]")
     load_mode = st.radio("วิธีป้อนแรง", ["ป้อน Mu, Vu โดยตรง", "น้ำหนักแผ่สม่ำเสมอ"])
     if load_mode == "ป้อน Mu, Vu โดยตรง":
         Mu_in = st.number_input("Mu (kg-m)", 0.0, 1e7, 25000.0, 500.0)
         Vu_in = st.number_input("Vu ที่หน้าตัดวิกฤต (kg)", 0.0, 1e7, 20000.0, 500.0)
+        st.caption("Mu, Vu ที่ป้อนต้องคำนวณด้วยตัวคูณน้ำหนักที่เลือกด้านบน")
         load_info = None
     else:
         system = st.selectbox("ระบบโครงสร้าง", ["คานช่วงเดียวธรรมดา", "คานยื่น"])
         wD_sdl = st.number_input("น้ำหนักบรรทุกคงที่เพิ่มเติม wD (kg/m)", 0.0, 1e6, 1500.0, 100.0)
         wL = st.number_input("น้ำหนักบรรทุกจร wL (kg/m)", 0.0, 1e6, 1000.0, 100.0)
         self_wt = st.checkbox("รวมน้ำหนักคานเอง (2,400 kg/m³)", True)
-        combo_key = st.radio("ตัวคูณน้ำหนัก", list(aci.LOAD_COMBOS),
-                             format_func=aci.LOAD_COMBOS.get)
-        load_info = dict(system=system, wD_sdl=wD_sdl, wL=wL, self_wt=self_wt, combo=combo_key)
+        load_info = dict(system=system, wD_sdl=wD_sdl, wL=wL, self_wt=self_wt)
 
     st.header("4) เหล็กเสริม")
     bars = list(aci.BAR_SIZES)
@@ -144,7 +148,7 @@ if load_info is None:
 else:
     w_sw = 2400.0 * b_cm / 100.0 * h_cm / 100.0 if load_info["self_wt"] else 0.0
     wD = load_info["wD_sdl"] + w_sw
-    wu, combo = aci.factored_line_load(wD, load_info["wL"], load_info["combo"])
+    wu, combo = aci.factored_line_load(wD, load_info["wL"], combo_key)
     if load_info["system"] == "คานช่วงเดียวธรรมดา":
         Mu_kgm = wu * span ** 2 / 8.0
         Vu_kg = wu * max(span / 2.0 - d_est_m, 0.0)
@@ -157,11 +161,19 @@ else:
         f"น้ำหนักคานเอง = 2,400 × {b_cm / 100:.2f} × {h_cm / 100:.2f} = {w_sw:,.0f} kg/m",
         f"wD = {wD:,.0f} kg/m, wL = {load_info['wL']:,.0f} kg/m",
         (f"wu = max(1.4D, 1.2D + 1.6L) = {wu:,.0f} kg/m  [{combo}]  (ACI 5.3.1)"
-         if load_info["combo"] == "ACI" else
+         if combo_key == "ACI" else
          f"wu = 1.4 × {wD:,.0f} + 1.7 × {load_info['wL']:,.0f} = {wu:,.0f} kg/m  (1.4D + 1.7L)"),
         f"Mu = {m_txt} = {Mu_kgm:,.0f} kg-m",
         f"Vu (ที่ระยะ d จากหน้าที่รองรับ, 9.4.3.2) = {v_txt} = {Vu_kg:,.0f} kg",
     ]
+
+phi_lines = [
+    f"ตัวคูณน้ำหนัก: {aci.LOAD_COMBOS[combo_key]}",
+    f"φ แรงดัด: {phi_set.tension:.2f} (tension-controlled) ถึง {phi_set.compression:.2f} "
+    f"(compression-controlled), แปรผันเชิงเส้นตาม εt ในช่วง transition",
+    f"φ แรงเฉือน: {phi_set.shear:.2f}",
+    f"อ้างอิง: {phi_set.name}",
+]
 
 Mu = kgm_to_nmm(Mu_kgm)
 Vu = kg_to_n(Vu_kg)
@@ -179,14 +191,14 @@ for e in errors:
 
 try:
     flex = aci.design_flexure(Mu, b, h, fc, fy, cover, d_s, d_agg, db_t, db_c,
-                              n_t=n_t_user, n_c=n_c_user, k=k)
+                              n_t=n_t_user, n_c=n_c_user, k=k, p=phi_set)
 except ValueError as exc:
     st.error(f"ไม่สามารถออกแบบได้: {exc}")
     st.stop()
 
 res = flex.result
 d = flex.d
-shear = aci.shear_design(Vu, b, d, fc, fyt, flex.tension.area, d_s, int(legs), lam, s_user, k=k)
+shear = aci.shear_design(Vu, b, d, fc, fyt, flex.tension.area, d_s, int(legs), lam, s_user, k=k, p=phi_set)
 h_min = aci.min_thickness(span * 1000.0, support, fy, k)
 s_crack = aci.crack_control_spacing(fy, cover + d_s, k)
 n_bot = flex.tension.layers[0]
@@ -247,6 +259,12 @@ with tab_sum:
     st.subheader("แรงออกแบบ")
     for line in load_lines:
         st.write("• " + line)
+    st.subheader("ตัวคูณลดกำลัง φ (เปลี่ยนตามตัวคูณน้ำหนัก)")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("φ ดัด (ใช้จริง)", f"{res.phi:.3f}", res.classification, delta_color="off")
+    p2.metric("φ ดัด tension / compression", f"{phi_set.tension:.2f} / {phi_set.compression:.2f}")
+    p3.metric("φ เฉือน", f"{phi_set.shear:.2f}")
+    st.caption(f"{aci.LOAD_COMBOS[combo_key]} → {phi_set.name}")
     st.subheader("ผลการตรวจสอบ")
     st.table({"รายการ": list(checks), "ผล": [ok(v) for v in checks.values()]})
     st.subheader("ความลึกต่ำสุด (Table 9.3.1.1) — ไม่ต้องตรวจสอบการแอ่นตัว")
@@ -277,7 +295,7 @@ with tab_flex:
 | a = β₁c | {mm_to_cm(res.a):.2f} cm | 22.2.2.4.1 |
 | εt | {res.eps_t:.5f} (εty = fy/Es = {eps_ty:.5f}) | |
 | การจำแนกหน้าตัด | {res.classification} | Table 21.2.2 |
-| φ | {res.phi:.3f} | Table 21.2.2 |
+| φ = {phi_set.compression:.2f} + {phi_set.tension - phi_set.compression:.2f}(εt − εty)/0.003, {phi_set.compression:.2f} ≤ φ ≤ {phi_set.tension:.2f} | **{res.phi:.3f}** | {phi_set.name} |
 | Mn | {Mn_kgm:,.0f} kg-m | |
 | **φMn** | **{phi_Mn_kgm:,.0f} kg-m** | |
 | Mu | {Mu_kgm:,.0f} kg-m | {ok(res.phi_Mn >= Mu)} |
@@ -313,7 +331,7 @@ with tab_shear:
 | ρw = As/(bw·d) | {flex.tension.area / (b * d):.4f} | |
 | λs = √(2/(1+0.04d)) ≤ 1 (d เป็น cm) | {shear.lambda_s:.3f} | 22.5.5.1.3 |
 | Vc = max({cf(C['vc'])}λ√f'c, {cf(C['vc_rho'])}λρw^⅓√f'c)·bw·d ≤ {cf(C['vc_max'])}λ√f'c·bw·d | {Vc_kg:,.0f} kg | Table 22.5.5.1 |
-| φVc | {0.75 * Vc_kg:,.0f} kg | φ = 0.75 |
+| φVc | {phi_set.shear * Vc_kg:,.0f} kg | φ = {phi_set.shear:.2f} ({phi_set.name}) |
 | ต้องใช้ Av,min หรือไม่ (Vu > φ{cf(C['av_trig'])}λ√f'c·bw·d) | {"ใช่" if shear.av_min_required else "ไม่ (แต่แนะนำให้ใส่)"} | 9.6.3.1 |
 | Av,min/s = max({cf(C['avmin1'])}√f'c, {cf(C['avmin2'])})·bw/fyt | {shear.Av_min_s / 10:.4f} cm²/cm | 9.6.3.4 |
 | Vs,req = Vu/φ − Vc | {Vs_req_kg:,.0f} kg | 22.5.8.5.3 |
@@ -382,8 +400,8 @@ with tab_sheet:
 - f'c = {fc_k:,.0f} ksc, fy = {fy_k:,.0f} ksc, fyt = {fyt_k:,.0f} ksc, Es = 2.04×10⁶ ksc, λ = {lam}
 - b × h = {b_cm:g} × {h_cm:g} cm, ระยะหุ้ม = {cover_cm:g} cm, L = {span:.2f} m ({support})
 
-## 2. แรงออกแบบ
-""" + "\n".join(f"- {l}" for l in load_lines) + f"""
+## 2. แรงออกแบบและตัวคูณลดกำลัง
+""" + "\n".join(f"- {l}" for l in load_lines + phi_lines) + f"""
 
 ## 3. ออกแบบรับแรงดัด
 - β1 = {aci.beta1(fc):.3f}, d = {d_cm:.2f} cm, dt = {dt_cm:.2f} cm, d' = {dc_cm:.2f} cm
@@ -393,7 +411,7 @@ with tab_sheet:
 - φMn = {res.phi:.3f} × {Mn_kgm:,.0f} = {phi_Mn_kgm:,.0f} kg-m {"≥" if res.phi_Mn >= Mu else "<"} Mu = {Mu_kgm:,.0f} kg-m → {ok(res.phi_Mn >= Mu)}
 
 ## 4. ออกแบบรับแรงเฉือน
-- Vc = max({cf(C['vc'])}λ√f'c, {cf(C['vc_rho'])}λρw^⅓√f'c)·bw·d = {Vc_kg:,.0f} kg, φVc = {0.75 * Vc_kg:,.0f} kg
+- Vc = max({cf(C['vc'])}λ√f'c, {cf(C['vc_rho'])}λρw^⅓√f'c)·bw·d = {Vc_kg:,.0f} kg, φ = {phi_set.shear:.2f}, φVc = {phi_set.shear * Vc_kg:,.0f} kg
 - Vs,req = {Vs_req_kg:,.0f} kg, s,max = {mm_to_cm(shear.s_max):.1f} cm
 - ใช้เหล็กปลอก {stir_txt}: Vs = {Vs_kg:,.0f} kg
 - φVn = {phi_Vn_kg:,.0f} kg {"≥" if shear.phi_Vn >= Vu else "<"} Vu = {Vu_kg:,.0f} kg → {ok(shear.phi_Vn >= Vu)}
