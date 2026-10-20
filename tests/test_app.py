@@ -78,3 +78,16 @@ def test_layer_table_follows_b10_rule():
     assert list(rows["จำนวน"]) == [3, 2, 2]
     x1, x2 = rows["ตำแหน่ง x จากขอบซ้าย (cm)"].iloc[0], rows["ตำแหน่ง x จากขอบซ้าย (cm)"].iloc[1]
     assert x2 == "5.9, 24.1" and x1.startswith("5.9") and x1.endswith("24.1")
+
+
+def test_auto_doubly_reinforced_in_app():
+    at = _run()
+    assert "Singly" in at.success[0].value
+    next(w for w in at.sidebar.selectbox if w.label == "เหล็กรับแรงดึง (ล่าง)").set_value("DB25")
+    next(w for w in at.sidebar.selectbox if w.label.startswith("เหล็กรับแรงอัด")).set_value("DB20")
+    next(w for w in at.sidebar.number_input if w.label == "Mu (kg-m)").set_value(45000.0).run()
+    assert not at.exception
+    assert "Doubly" in at.success[0].value
+    assert at.metric[1].label == "เหล็กบน (รับแรงอัด)"
+    steps = next(m.value for m in at.markdown if "Mn2 = Mu/φ − Mn1" in m.value)
+    assert "A's,req" in steps and "As2" in steps

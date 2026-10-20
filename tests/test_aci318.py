@@ -132,3 +132,23 @@ def test_auto_design_uses_b10_rule_and_symmetric_layers():
     assert max(fd.tension.layers) <= 3 and fd.tension.symmetric
     assert all(set(xs) <= set(fd.tension.x[0]) for xs in fd.tension.x[1:])
     assert all(fd.checks.values())
+
+
+def test_switches_to_doubly_when_mu_exceeds_singly_capacity():
+    r = aci.flexure_requirement(300e6, 300, 520, 60, 24, 390)
+    assert not r.doubly and r.Asc == 0
+    Mu = 1.15 * r.phi_Mn_max_singly
+    r2 = aci.flexure_requirement(Mu, 300, 520, 60, 24, 390)
+    assert r2.doubly and r2.Asc > 0
+    assert r2.As == pytest.approx(r2.As1 + r2.As2)
+    # equilibrium of the two couples reproduces Mu/phi
+    Mn = r2.Mn1 + r2.Asc * (r2.fsc - 0.85 * 24) * (520 - 60)
+    assert Mn == pytest.approx(Mu / 0.90)
+
+
+def test_auto_design_adds_compression_steel():
+    Mu = 450e6
+    fd = aci.design_flexure(Mu, 300, 600, 24, 390, 40, 9, 20, 25, 20, max_per_layer=3)
+    assert fd.doubly
+    assert fd.compression.area >= fd.Asc_req
+    assert all(fd.checks.values()) and fd.result.phi_Mn >= Mu

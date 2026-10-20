@@ -301,13 +301,39 @@ def analyze_flexure(b: float, h: float, fc: float, fy: float,
                          classification=section_class(eps_t, fy), steel=layers)
 
 
-def required_steel(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: float,
-                   p: PhiFactors = PHI_ACI):
+@dataclass
+class FlexureRequirement:
+    """Required reinforcement for Mu, singly or doubly reinforced (22.2)."""
+    Mu: float
+    d: float
+    d_comp: float
+    phi: float
+    c_tc: float               # neutral axis at the tension-controlled limit
+    a_tc: float
+    Mn_max_singly: float      # Mn of a singly reinforced section at c = c_tc
+    phi_Mn_max_singly: float
+    doubly: bool
+    As: float                 # total tension steel required
+    Asc: float = 0.0          # compression steel required
+    As1: float = 0.0          # part balancing the concrete (doubly only)
+    As2: float = 0.0          # part balancing the compression steel (doubly only)
+    Mn1: float = 0.0
+    Mn2: float = 0.0
+    eps_sc: float = 0.0
+    fsc: float = 0.0
+    sc_yields: bool = False
+    rho: float = 0.0
+
+
+def flexure_requirement(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: float,
+                        p: PhiFactors = PHI_ACI) -> FlexureRequirement:
     """Closed-form required reinforcement (rectangular stress block).
 
-    Returns (As_req, As'_req). Singly reinforced if the section can stay
-    tension-controlled (eps_t >= eps_ty + 0.003); otherwise compression steel
-    is added keeping c at the tension-controlled limit.
+    The largest singly reinforced capacity is taken at the tension-controlled
+    limit eps_t = eps_ty + 0.003 (phi = phi_tension). If Mu exceeds it, the
+    section is designed as doubly reinforced: the concrete couple stays at that
+    limit (As1) and compression steel A's with matching tension steel As2 carry
+    the rest, M2 = Mu/phi - Mn1.
     """
     phi = p.tension
     b1 = beta1(fc)
@@ -316,19 +342,31 @@ def required_steel(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: 
     a_tc = b1 * c_tc
     Mn_tc = 0.85 * fc * a_tc * b * (d - a_tc / 2.0)
     Mn_req = Mu / phi
+    base = dict(Mu=Mu, d=d, d_comp=d_comp, phi=phi, c_tc=c_tc, a_tc=a_tc,
+                Mn_max_singly=Mn_tc, phi_Mn_max_singly=phi * Mn_tc)
     if Mn_req <= Mn_tc:
         Rn = Mn_req / (b * d ** 2)
         rho = 0.85 * fc / fy * (1.0 - math.sqrt(max(0.0, 1.0 - 2.0 * Rn / (0.85 * fc))))
-        return rho * b * d, 0.0
+        return FlexureRequirement(**base, doubly=False, As=rho * b * d, rho=rho)
     As1 = 0.85 * fc * a_tc * b / fy
     M2 = Mn_req - Mn_tc
     eps_sc = EPS_CU * (c_tc - d_comp) / c_tc
     fsc = min(fy, ES * eps_sc)
     if fsc - 0.85 * fc <= 0:
-        raise ValueError("Compression steel ineffective (too close to neutral axis); increase section depth.")
-    As_c = M2 / ((fsc - 0.85 * fc) * (d - d_comp))
-    As2 = As_c * (fsc - 0.85 * fc) / fy
-    return As1 + As2, As_c
+        raise ValueError("Compression steel ineffective (too close to neutral axis); "
+                         "increase section depth.")
+    Asc = M2 / ((fsc - 0.85 * fc) * (d - d_comp))
+    As2 = Asc * (fsc - 0.85 * fc) / fy
+    return FlexureRequirement(**base, doubly=True, As=As1 + As2, Asc=Asc, As1=As1, As2=As2,
+                              Mn1=Mn_tc, Mn2=M2, eps_sc=eps_sc, fsc=fsc,
+                              sc_yields=ES * eps_sc >= fy)
+
+
+def required_steel(Mu: float, b: float, d: float, d_comp: float, fc: float, fy: float,
+                   p: PhiFactors = PHI_ACI):
+    """Returns (As_req, As'_req); see flexure_requirement."""
+    r = flexure_requirement(Mu, b, d, d_comp, fc, fy, p)
+    return r.As, r.Asc
 
 
 def crack_control_spacing(fy: float, cc: float, k: Coefficients = ACI_SI) -> float:
@@ -446,20 +484,32 @@ class FlexureDesign:
     d: float
     dt: float
     d_comp: float
-    As_req: float
-    Asc_req: float
+    req: FlexureRequirement      # required steel at the actual d and d'
     As_min: float
     result: FlexureResult
     checks: dict[str, bool]
 
+    @property
+    def As_req(self) -> float:
+        return self.req.As
+
+    @property
+    def Asc_req(self) -> float:
+        return self.req.Asc
+
+    @property
+    def doubly(self) -> bool:
+        return self.req.doubly
+
 
 def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db_c,
-                   As_req, Asc_req, k: Coefficients = ACI_SI,
-                   p: PhiFactors = PHI_ACI, max_per_layer: int | None = None) -> FlexureDesign:
+                   k: Coefficients = ACI_SI, p: PhiFactors = PHI_ACI,
+                   max_per_layer: int | None = None) -> FlexureDesign:
     tens = arrange_bars(n_t, db_t, b, cover, d_stirrup, d_agg, max_per_layer)
     comp = arrange_bars(n_c, db_c, b, cover, d_stirrup, d_agg, max_per_layer)
     d = h - tens.centroid
     dt = h - tens.depths[0]
+    req = flexure_requirement(Mu, b, d, comp.centroid, fc, fy, p)
     steel = [(k * bar_area(db_c), y) for k, y in zip(comp.layers, comp.depths)]
     steel += [(k * bar_area(db_t), h - y) for k, y in zip(tens.layers, tens.depths)]
     res = analyze_flexure(b, h, fc, fy, steel, dt, p)
@@ -467,7 +517,7 @@ def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db
     checks = {
         "strength": res.phi_Mn >= Mu,
         # 9.6.1.3: As,min need not be satisfied if As,prov >= 4/3 As,req
-        "as_min": tens.area >= As_min or tens.area >= 4.0 / 3.0 * As_req,
+        "as_min": tens.area >= As_min or tens.area >= 4.0 / 3.0 * req.As,
         "eps_t": res.eps_t >= 0.004,                          # 9.3.3.1
         "spacing_t": tens.clear_spacing >= tens.s_clear_min - 1e-9,
         "spacing_c": comp.clear_spacing >= comp.s_clear_min - 1e-9,
@@ -475,9 +525,8 @@ def _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t, n_c, db
         # practical detailing: at most 3 tension layers and 2 compression layers
         "layers": len(tens.layers) <= 3 and len(comp.layers) <= 2,
     }
-    return FlexureDesign(tension=tens, compression=comp, d=d, dt=dt,
-                         d_comp=comp.centroid, As_req=As_req, Asc_req=Asc_req,
-                         As_min=As_min, result=res, checks=checks)
+    return FlexureDesign(tension=tens, compression=comp, d=d, dt=dt, d_comp=comp.centroid,
+                         req=req, As_min=As_min, result=res, checks=checks)
 
 
 def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: float,
@@ -487,28 +536,33 @@ def design_flexure(Mu: float, b: float, h: float, fc: float, fy: float, cover: f
                    p: PhiFactors = PHI_ACI, max_per_layer: int | None = None) -> FlexureDesign:
     """Select (or check, if n_t/n_c given) longitudinal bars for factored moment Mu (N-mm).
 
+    When Mu exceeds the singly reinforced capacity at the tension-controlled
+    limit, the section is designed as doubly reinforced automatically and the
+    top bars are increased to the required A's. Steel requirements are
+    recomputed at the actual d and d' of each trial arrangement.
+
     max_per_layer limits the bars in one layer (e.g. bars_per_layer_rule(b)).
     The automatic selection adds a bar when an upper layer cannot sit symmetrically
     over the first layer.
     """
-    d0 = h - cover - d_stirrup - db_t / 2.0
-    dc0 = cover + d_stirrup + db_c / 2.0
-    As_req, Asc_req = required_steel(Mu, b, d0, dc0, fc, fy, p)
-    manual = n_t is not None and n_c is not None
-    if manual:
+    if n_t is not None and n_c is not None:
         return _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, n_t, db_t,
-                              n_c, db_c, As_req, Asc_req, k, p, max_per_layer)
+                              n_c, db_c, k, p, max_per_layer)
 
-    As_min0 = as_min_flexure(fc, fy, b, d0, k)
-    As_target = max(As_req, min(As_min0, 4.0 / 3.0 * As_req))
-    nt = max(2, math.ceil(As_target / bar_area(db_t)))
-    nc = max(n_hanger, math.ceil(Asc_req / bar_area(db_c)) if Asc_req > 0 else 0, 2)
+    Ab_t, Ab_c = bar_area(db_t), bar_area(db_c)
+    nt, nc = 2, max(n_hanger, 2)
     best = None
     for _ in range(100):
         best = _check_flexure(Mu, b, h, fc, fy, cover, d_stirrup, d_agg, nt, db_t,
-                              nc, db_c, As_req, Asc_req, k, p, max_per_layer)
-        ck = best.checks
-        if ck["strength"] and ck["as_min"] and ck["eps_t"]:
+                              nc, db_c, k, p, max_per_layer)
+        ck, req = best.checks, best.req
+        # bring the bar counts up to the closed-form requirement at this d, d'
+        As_target = max(req.As, min(best.As_min, 4.0 / 3.0 * req.As))
+        need_t = max(nt, math.ceil(As_target / Ab_t - 1e-9))
+        need_c = max(nc, math.ceil(req.Asc / Ab_c - 1e-9))
+        if (need_t, need_c) != (nt, nc):
+            nt, nc = need_t, need_c
+        elif ck["strength"] and ck["as_min"] and ck["eps_t"]:
             if best.tension.symmetric and best.compression.symmetric:
                 break
             nt += 0 if best.tension.symmetric else 1

@@ -45,7 +45,7 @@ streamlit run app.py
 | φ ตามความเครียด εt (tension/transition/compression-controlled) | Table 21.2.2 |
 | εt ≥ 0.004 สำหรับคาน | 9.3.3.1 |
 | As,min | 9.6.1.2, 9.6.1.3 |
-| หน้าตัดเสริมเหล็กรับแรงอัด (strain compatibility หลายชั้น) | 22.2 |
+| ออกแบบเป็นคานเสริมเหล็กรับแรงอัด (doubly reinforced) อัตโนมัติเมื่อ Mu > φMn,max ของหน้าตัดเสริมเหล็กรับแรงดึงอย่างเดียว (ขีดจำกัด tension-controlled) แสดงขั้นตอน As1, As2, A's, f's; ตรวจสอบด้วย strain compatibility หลายชั้น | 22.2 |
 | Vc แบบใหม่ (ρw^(1/3), size effect λs), √f'c ≤ 8.3 MPa | 22.5.5.1, 22.5.3.1 |
 | ขนาดหน้าตัดสูงสุดรับแรงเฉือน | 22.5.1.2 |
 | Av,min, s,max เหล็กปลอก | 9.6.3, 9.7.6.2.2 |

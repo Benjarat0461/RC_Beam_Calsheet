@@ -233,6 +233,36 @@ As_cm2 = mm2_to_cm2(flex.tension.area)
 Asc_cm2 = mm2_to_cm2(flex.compression.area)
 s_prov_cm = mm_to_cm(shear.s_provided)
 
+# --- singly / doubly reinforced decision and required steel (at the actual d, d') ---
+req = flex.req
+req_lines = [
+    f"φMn,max (เสริมเหล็กรับแรงดึงอย่างเดียว ที่ขีดจำกัด tension-controlled εt = εty + 0.003): "
+    f"c = 0.003/(0.003 + {fy / aci.ES:.5f} + 0.003)·d = {mm_to_cm(req.c_tc):.2f} cm, "
+    f"a = β₁c = {mm_to_cm(req.a_tc):.2f} cm",
+    f"φMn,max = {req.phi:.2f} × 0.85f'c·a·b·(d − a/2) = {nmm_to_kgm(req.phi_Mn_max_singly):,.0f} kg-m "
+    f"{'≥' if not req.doubly else '<'} Mu = {Mu_kgm:,.0f} kg-m",
+]
+if not req.doubly:
+    req_lines += [
+        "→ **หน้าตัดเสริมเหล็กรับแรงดึงอย่างเดียว (Singly reinforced)**",
+        f"Rn = Mu/(φbd²) = {mpa_to_ksc(Mu / (req.phi * b * d ** 2)):.2f} ksc, "
+        f"ρ = 0.85f'c/fy·[1 − √(1 − 2Rn/0.85f'c)] = {req.rho:.5f}",
+        f"As,req = ρbd = {mm2_to_cm2(req.As):.2f} cm²",
+    ]
+else:
+    req_lines += [
+        "→ **Mu > φMn,max ต้องออกแบบเป็นคานเสริมเหล็กรับแรงอัด (Doubly reinforced) อัตโนมัติ**",
+        f"Mn1 = 0.85f'c·a·b·(d − a/2) = {nmm_to_kgm(req.Mn1):,.0f} kg-m, "
+        f"As1 = 0.85f'c·a·b/fy = {mm2_to_cm2(req.As1):.2f} cm²",
+        f"Mn2 = Mu/φ − Mn1 = {Mu_kgm:,.0f}/{req.phi:.2f} − {nmm_to_kgm(req.Mn1):,.0f} = "
+        f"{nmm_to_kgm(req.Mn2):,.0f} kg-m",
+        f"ε's = 0.003(c − d')/c = {req.eps_sc:.5f} → f's = Es·ε's ≤ fy = {mpa_to_ksc(req.fsc):,.0f} ksc "
+        f"({'เหล็กรับแรงอัดคราก' if req.sc_yields else 'เหล็กรับแรงอัดยังไม่คราก'})",
+        f"A's,req = Mn2/[(f's − 0.85f'c)(d − d')] = {mm2_to_cm2(req.Asc):.2f} cm²",
+        f"As2 = A's(f's − 0.85f'c)/fy = {mm2_to_cm2(req.As2):.2f} cm²",
+        f"As,req = As1 + As2 = {mm2_to_cm2(req.As):.2f} cm²",
+    ]
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -242,15 +272,17 @@ bot_txt = f"{flex.tension.n}-{db_t_name}" + (f" ({t_lay} ชั้น)" if len(f
 top_txt = f"{flex.compression.n}-{db_c_name}" + (f" ({c_lay} ชั้น)" if len(flex.compression.layers) > 1 else "")
 stir_txt = f"{ds_name} @ {s_prov_cm:.1f} cm ({legs} ขา)"
 
+beam_type = ("คานเสริมเหล็กรับแรงอัด (Doubly reinforced)" if req.doubly
+             else "คานเสริมเหล็กรับแรงดึงอย่างเดียว (Singly reinforced)")
 if all_ok:
-    st.success(f"**{beam_id} {b_cm:g}×{h_cm:g} cm** — ผ่านทุกข้อกำหนด")
+    st.success(f"**{beam_id} {b_cm:g}×{h_cm:g} cm** — ผ่านทุกข้อกำหนด · {beam_type}")
 else:
     st.error(f"**{beam_id} {b_cm:g}×{h_cm:g} cm** — มีรายการไม่ผ่าน กรุณาปรับหน้าตัดหรือเหล็กเสริม")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("เหล็กล่าง", f"{flex.tension.n}-{db_t_name}",
           f"As = {As_cm2:.2f} cm² · ชั้น {t_lay}", delta_color="off")
-c2.metric("เหล็กบน", f"{flex.compression.n}-{db_c_name}",
+c2.metric("เหล็กบน (รับแรงอัด)" if req.doubly else "เหล็กบน", f"{flex.compression.n}-{db_c_name}",
           f"A's = {Asc_cm2:.2f} cm² · ชั้น {c_lay}", delta_color="off")
 c3.metric("เหล็กปลอก", stir_txt)
 c4.metric("อัตราส่วนการใช้งาน", f"M {Mu / res.phi_Mn:.2f} | V {Vu / shear.phi_Vn:.2f}"
@@ -269,6 +301,14 @@ with tab_sum:
     p2.metric("φ ดัด tension / compression", f"{phi_set.tension:.2f} / {phi_set.compression:.2f}")
     p3.metric("φ เฉือน", f"{phi_set.shear:.2f}")
     st.caption(f"{aci.LOAD_COMBOS[combo_key]} → {phi_set.name}")
+    st.subheader("ประเภทหน้าตัด")
+    (st.warning if req.doubly else st.info)(
+        f"φMn,max เสริมเหล็กรับแรงดึงอย่างเดียว = {nmm_to_kgm(req.phi_Mn_max_singly):,.0f} kg-m "
+        f"{'<' if req.doubly else '≥'} Mu = {Mu_kgm:,.0f} kg-m → **{beam_type}**")
+    if mode != "ออกแบบอัตโนมัติ" and res.phi_Mn < Mu:
+        st.error(f"เหล็กที่กำหนดรับโมเมนต์ไม่พอ ต้องการ As ≥ {mm2_to_cm2(req.As):.2f} cm²"
+                 + (f" และ A's ≥ {mm2_to_cm2(req.Asc):.2f} cm²" if req.doubly else "")
+                 + " — เลือก \"ออกแบบอัตโนมัติ\" เพื่อให้โปรแกรมจัดเหล็กให้")
     st.subheader("ผลการตรวจสอบ")
     st.table({"รายการ": list(checks), "ผล": [ok(v) for v in checks.values()]})
     st.subheader("ความลึกต่ำสุด (Table 9.3.1.1) — ไม่ต้องตรวจสอบการแอ่นตัว")
@@ -283,6 +323,9 @@ with tab_sum:
 with tab_flex:
     b1 = aci.beta1(fc)
     eps_ty = fy / aci.ES
+    st.markdown("**ขั้นที่ 1: ตรวจสอบความจำเป็นของเหล็กรับแรงอัด และหาเหล็กเสริมที่ต้องการ (22.2)**")
+    st.markdown("\n".join(f"{i}. {l}" for i, l in enumerate(req_lines, 1)))
+    st.markdown("**ขั้นที่ 2: ตรวจสอบหน้าตัดที่เลือกด้วย strain compatibility**")
     st.markdown(f"""
 | รายการ | ค่า | อ้างอิง |
 |---|---|---|
@@ -291,7 +334,8 @@ with tab_flex:
 | dt (ถึงเหล็กชั้นนอกสุด) | {dt_cm:.2f} cm | |
 | d' (ถึงศูนย์ถ่วงเหล็กบน) | {dc_cm:.2f} cm | |
 | As,req | {mm2_to_cm2(flex.As_req):.2f} cm² | 22.2 |
-| A's,req | {mm2_to_cm2(flex.Asc_req):.2f} cm² | {"ต้องใช้เหล็กรับแรงอัด" if flex.Asc_req > 0 else "เสริมเหล็กรับแรงดึงอย่างเดียว"} |
+| A's,req | {mm2_to_cm2(flex.Asc_req):.2f} cm² | {beam_type} |
+| A's,provided | {Asc_cm2:.2f} cm² | |
 | As,min = max({cf(C['asmin1'])}√f'c, {cf(C['asmin2'])})·b·d/fy | {mm2_to_cm2(flex.As_min):.2f} cm² | 9.6.1.2 |
 | As,provided | {As_cm2:.2f} cm² | |
 | ρ = As/(b·d) | {flex.tension.area / (b * d):.4f} | |
@@ -423,6 +467,7 @@ with tab_sheet:
 
 ## 3. ออกแบบรับแรงดัด
 - β1 = {aci.beta1(fc):.3f}, d = {d_cm:.2f} cm, dt = {dt_cm:.2f} cm, d' = {dc_cm:.2f} cm
+""" + "\n".join(f"- {l}" for l in req_lines) + f"""
 - As,req = {mm2_to_cm2(flex.As_req):.2f} cm², A's,req = {mm2_to_cm2(flex.Asc_req):.2f} cm², As,min = {mm2_to_cm2(flex.As_min):.2f} cm²
 - ใช้เหล็กล่าง {bot_txt}: As = {As_cm2:.2f} cm²; เหล็กบน {top_txt}: A's = {Asc_cm2:.2f} cm²
 - c = {mm_to_cm(res.c):.2f} cm, a = {mm_to_cm(res.a):.2f} cm, εt = {res.eps_t:.5f} → {res.classification}, φ = {res.phi:.3f}
